@@ -1,0 +1,49 @@
+import { z } from "zod";
+import { ingestSchema, querySchema, documents } from "./schema";
+
+const RAG_BASE = "/api/rag";
+export const api = {
+  rag: {
+    ingest: {
+      method: "POST" as const,
+      path: `${RAG_BASE}/ingest`,
+      input: ingestSchema,
+      responses: {
+        200: z.object({ success: z.boolean(), message: z.string() }),
+        500: z.object({ message: z.string() }),
+      },
+    },
+    query: {
+      method: "POST" as const,
+      path: `${RAG_BASE}/query`,
+      input: querySchema,
+      responses: {
+        200: z.object({
+          answer: z.string(),
+          sources: z.array(z.string()),
+        }),
+        500: z.object({ message: z.string() }),
+      },
+    },
+    sessionStatus: {
+      method: "GET" as const,
+      path: `${RAG_BASE}/session-status/:sessionId`,
+      responses: {
+        200: z.object({ hasDocument: z.boolean() }),
+        500: z.object({ message: z.string() }),
+      },
+    },
+  },
+};
+
+export function buildUrl(path: string, params?: Record<string, string | number>): string {
+  let url = path;
+  if (params) {
+    Object.entries(params).forEach(([key, value]) => {
+      if (url.includes(`:${key}`)) {
+        url = url.replace(`:${key}`, String(value));
+      }
+    });
+  }
+  return url;
+}

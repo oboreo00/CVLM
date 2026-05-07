@@ -1,0 +1,32 @@
+Boris Lai
+Senior Software Engineer   •   Toronto, ON       •   linkedin.com/in/boris-lai-3304011
+SUMMARY
+Senior software engineer with 15+ years building developer tooling and workflow platforms for specialized technical domains. Strong TypeScript and React frontend experience with full-stack depth in Node.js, PostgreSQL, and real-time systems. Track record of owning features end-to-end — from high-performance UI design to backend API and data layer — across complex cross-platform products. Comfortable pushing the limits of modern TypeScript to deliver snappy, intuitive developer experiences. Active user and integrator of AI tooling.
+EXPERIENCE
+Senior Software Engineer  |  Toon Boom Animation  |  Mar 2017 – Nov 2025
+Cross-platform production workflow management platform — web + Electron desktop — serving studios worldwide.
+	•	Built React and TypeScript frontend applications delivering high-performance UIs for complex production data, workflow state visualization, and real-time updates via Socket.IO.
+	•	Designed and implemented RESTful APIs in Node.js for core workflow features including permission management, configuration-driven administration, and internal tooling — enabling full end-to-end feature ownership across the stack.
+	•	Built and maintained a production Node.js backend powering a cross-platform workflow management product serving studios and production teams globally.
+	•	Optimized PostgreSQL query performance using CTEs, execution plan analysis, and index tuning; implemented Redis caching and event debouncing for real-time updates, and RabbitMQ for async job processing.
+	•	Served as escalation point for production incidents, diagnosing and resolving issues across the full stack alongside product and support teams.
+	•	Collaborated with product managers and QA to translate stakeholder requirements into technical designs, iterating across short release cycles.
+Director of Engineering → Software Engineer  |  Southpaw Technology  |  May 2006 – Oct 2016
+Digital asset and workflow management platform serving enterprise clients in media, advertising, and VFX.
+	•	Led development of Producer — a cross-platform workflow management desktop application built with React, Node.js, and Electron — owning the full lifecycle from architecture through delivery.
+	•	Designed and delivered production integrations for enterprise clients including Adidas, P&G, Turner, and Lockheed Martin, working directly in client environments.
+	•	Developed features and maintained the core platform; delivered custom workflow solutions for clients across media, enterprise, and post-production.
+	•	Mentored engineers and interns on platform APIs, SDKs, and integration patterns.
+Pipeline Software Engineer  |  Core Feature Animation  |  Apr 2004 – Apr 2006
+CG feature film pipeline studio.
+	•	Developed and maintained an internal Java-based asset management system tailored for a CG feature film pipeline (Houdini), building tooling to support complex production workflows for technical artists.
+TECHNICAL SKILLS
+Languages: TypeScript, JavaScript (Node.js), Python, SQL, Java
+Frontend: React, Electron
+Databases: PostgreSQL
+Caching / Messaging: Redis, RabbitMQ
+Infrastructure: Docker, AWS, CI/CD pipelines, Linux
+Practices: REST API design, real-time systems, on-call operations, agile delivery
+EDUCATION
+B.Sc. Mechanical Engineering — University of Toronto
+Certificate in Digital Animation — Centennial College
