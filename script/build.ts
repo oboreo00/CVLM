@@ -54,7 +54,6 @@ async function buildAll() {
     outfile: "dist/index.cjs",
     define: {
       "process.env.NODE_ENV": '"production"',
-      "process.env.DATABASE_URL": '"postgres://blai@localhost:5432/rag_demo"',
     },
     minify: true,
     external: externals,
