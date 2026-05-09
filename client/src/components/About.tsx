@@ -56,7 +56,7 @@ export default function About({ open, onOpenChange }: AboutProps) {
             <li>Suggest follow-up questions for deeper exploration</li>
             <li>Break down complex queries into focused sub-questions</li>
           </ul>
-          <h3>Example Questions:</h3>
+          <h3>Example Questions</h3>
           <ul>
             <li>"What did I do in my last job?" — a simple grounded lookup from your resume data</li>
             <li>"How does my background prepare me for a role in fintech?" — triggers career mapping and web search on what fintech roles actually require</li>
