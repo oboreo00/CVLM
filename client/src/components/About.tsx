@@ -56,7 +56,13 @@ export default function About({ open, onOpenChange }: AboutProps) {
             <li>Suggest follow-up questions for deeper exploration</li>
             <li>Break down complex queries into focused sub-questions</li>
           </ul>
-
+          <h3>Example Questions:</h3>
+          <ul>
+            <li>"What did I do in my last job?" — a simple grounded lookup from your resume data</li>
+            <li>"How does my background prepare me for a role in fintech?" — triggers career mapping and web search on what fintech roles actually require</li>
+            <li>"What's the biggest gap in my resume for a Staff Engineer role, and how would I close it?" — grounded self-assessment with external market context</li>
+            <li>"If I wanted to pivot into climate tech, what transferable skills do I already have?" — personal data combined with live web context on the domain</li>
+          </ul>
           <h2>Architecture Highlights</h2>
           <ul>
             <li><strong>Vector Store:</strong> PostgreSQL with pgvector for semantic search</li>

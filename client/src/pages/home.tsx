@@ -603,7 +603,6 @@ export default function Home() {
   const [loadingIngest, setLoadingIngest] = useState(false);
   const [loadingQuery, setLoadingQuery] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [ingestSuccess, setIngestSuccess] = useState(false);
   const [isHighlighting, setIsHighlighting] = useState(false);
   const [sessionId, setSessionId] = useState<string>("");
   const [queryMode, setQueryMode] = useState<"core" | "session">("core");
@@ -639,7 +638,6 @@ export default function Home() {
     if (!ingestText.trim()) return;
     setLoadingIngest(true);
     setError(null);
-    setIngestSuccess(false);
     try {
       const res = await fetch("/api/rag/ingest", {
         method: "POST",
@@ -773,7 +771,7 @@ export default function Home() {
                 onClick={handleIngest}
                 disabled={loadingIngest || !ingestText.trim()}
               >
-                {loadingIngest ? "Saving" : ingestSuccess ? "✓ Saved" : hasResume ? "Update Resume" : "Upload Resume"}
+                {loadingIngest ? "Saving" : hasResume ? "Update Resume" : "Upload Resume"}
               </button>
             </div>
           </div>

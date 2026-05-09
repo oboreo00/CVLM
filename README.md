@@ -157,7 +157,7 @@ The backend provides two main endpoints:
 1. **Document Ingestion:**
    - Text is converted into an embedding vector using Google's `gemini-embedding-2` model. This specific model is used to ensure all vectors in the store are comparable and high-dimensional.
    - If a `sessionId` is provided, the vectors are tagged and given a 24-hour TTL (Time-To-Live) for automatic cleanup.
-   - Vectors are stored in PostgreSQL using the `pgvector` extension for efficient and accurate cosine similarity searches. An in-memory cache also tracks active session vectors for sub-millisecond lookups.
+   - Vectors are stored in PostgreSQL using the `pgvector` extension for efficient and accurate cosine similarity searches. An in-memory LRU cache also tracks active session vectors for sub-millisecond lookups.
 
 2. **Smart Query Processing:**
    - CVLM explicitly segments the vector search based on `queryMode` and `sessionId` to prevent cross-contamination of resumes.
@@ -184,7 +184,7 @@ The application uses a unified document storage schema:
   - `id` (serial, primary key)
   - `content` (text, required)
   - `metadata` (jsonb, optional)
-  - `embedding` (vector(768)) — Stores high-precision embeddings from the `gemini-embedding-2` model for `pgvector` comparison.
+  - `embedding` (vector(3072)) — Stores high-precision embeddings from the `gemini-embedding-2` model for `pgvector` comparison.
 
 ## Troubleshooting
 
