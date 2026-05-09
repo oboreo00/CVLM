@@ -23,6 +23,7 @@ CG feature film pipeline studio.
 TECHNICAL SKILLS
 Languages: TypeScript, JavaScript (Node.js), Python, SQL, Java
 Frontend: React, Electron
+IDE: JetBrains PyCharm, VS Code, Cursor, Antigravity
 Databases: PostgreSQL
 Caching / Messaging: Redis, RabbitMQ
 Infrastructure: Docker, AWS, CI/CD pipelines, Linux
@@ -30,3 +31,5 @@ Practices: REST API design, real-time systems, on-call operations, agile deliver
 EDUCATION
 B.Sc. Mechanical Engineering — University of Toronto
 Certificate in Digital Animation — Centennial College
+PROJECTS AND INTERESTS
+CVLM — Career knowledge assistant built with Node.js, Supabase (pgvector), and Google Gemini embeddings. Hybrid RAG architecture with live web search fallback, multi-tenant session isolation, and semantic response caching. Developed using AI-assisted IDE tooling (VS Code and Antigravity).

@@ -69,7 +69,11 @@ export class LRUCache<T> {
    */
   toJSON(): any[] {
     const data: any[] = [];
+    const now = Date.now();
     for (const [key, entry] of this.cache) {
+      // Only persist items that haven't expired yet
+      if (now > entry.expiresAt) continue;
+
       data.push({
         key,
         value: entry.value,

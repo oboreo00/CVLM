@@ -12,6 +12,10 @@ export function hashContent(text: string): string {
   return createHash("md5").update(text).digest("hex");
 }
 
+/**
+ * Database table for storing document content, metadata, and high-dimensional vector embeddings.
+ * @note Add IVFFlat/HNSW index at >1000 rows. Note: Local JSON cache handles high-frequency repeats, but DB indexing is required for O(log N) search on unique/cold queries.
+ */
 export const documents = pgTable("documents", {
   id: serial("id").primaryKey(),
   content: text("content").notNull(),
