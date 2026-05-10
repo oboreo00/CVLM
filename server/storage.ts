@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import { db } from "./db";
-import { documents, type InsertDocument, type Document } from "@shared/schema";
+import { documents, queryLogs, type InsertDocument, type Document } from "@shared/schema";
 
 export interface IStorage {
   createDocument(doc: InsertDocument): Promise<Document>;
@@ -8,6 +8,7 @@ export interface IStorage {
   addDocuments(docs: InsertDocument[]): Promise<Document[]>;
   deleteExpiredSessions(): Promise<void>;
   deleteSessionDocuments(sessionId: string): Promise<void>;
+  insertQueryLog(log: any): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -42,6 +43,13 @@ export class DatabaseStorage implements IStorage {
     await db.execute(
       sql`DELETE FROM documents WHERE metadata->>'sessionId' = ${sessionId}`
     );
+  }
+
+  async insertQueryLog(log: any): Promise<void> {
+    await db.insert(queryLogs).values({
+      ...log,
+      relevanceScore: log.relevanceScore?.toString()
+    });
   }
 }
 

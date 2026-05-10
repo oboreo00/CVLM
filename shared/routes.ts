@@ -21,6 +21,27 @@ export const api = {
         200: z.object({
           answer: z.string(),
           sources: z.array(z.string()),
+          relevanceScore: z.number().optional(),
+          isAdviceQuestion: z.boolean().optional(),
+          _cacheHit: z.boolean().optional(),
+          telemetry: z.object({
+            totalDurationMs: z.number(),
+            stepDurations: z.record(z.string(), z.number()),
+            relevanceScore: z.number(),
+            modelsUsed: z.object({
+              synthesis: z.string(),
+              analysis: z.string(),
+              embedding: z.string(),
+            }),
+            cacheStatus: z.object({
+              embeddingHit: z.boolean(),
+              webSearchHit: z.boolean(),
+              responseHit: z.boolean(),
+            }),
+            promptTokens: z.number().optional(),
+            completionTokens: z.number().optional(),
+            totalTokens: z.number().optional(),
+          }).optional(),
         }),
         500: z.object({ message: z.string() }),
       },

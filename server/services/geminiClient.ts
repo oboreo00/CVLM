@@ -12,14 +12,22 @@ function sleep(ms: number): Promise<void> {
 /**
  * Standard wrapper for Gemini generation with retries and simplified return
  */
-export async function getAnswer(ai: any, prompt: string, model: string = AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0]): Promise<string> {
+export async function getAnswer(ai: any, prompt: string, model: string = AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0]): Promise<{ text: string, usage: any }> {
   const response = (await withGeminiRetries(`getAnswer (${model})`, () =>
     ai.models.generateContent({
       model: model,
       contents: prompt,
     }),
-  )) as { text?: string };
-  return response.text || "";
+  )) as any;
+
+  // The SDK class instance has a .text getter, but for the raw response 
+  // we access candidates[0]
+  const text = response.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  
+  return { 
+    text, 
+    usage: response.usageMetadata 
+  };
 }
 
 /**

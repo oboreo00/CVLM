@@ -3,6 +3,7 @@
  * Analyzes question complexity, relevance, and suggests decomposition
  */
 
+import { performance } from "perf_hooks";
 import { withGeminiRetries, getAnswer, isUncertainAnswer } from "./geminiClient.ts";
 import { AI_MODELS, AI_CONFIG } from "./aiConfig.ts";
 import { queryCache } from "./cacheService.ts";
@@ -151,9 +152,9 @@ export async function suggestQuestionBreakdown(
   ai: any,
   question: string,
   structure: QuestionStructure
-): Promise<string[]> {
+): Promise<{ questions: string[], usage: any }> {
   if (structure.estimatedSubQuestions <= 1) {
-    return [];
+    return { questions: [], usage: null };
   }
   
   const prompt = `Break down this complex question into ${structure.estimatedSubQuestions} simpler, focused questions that address different aspects. Return ONLY the questions, one per line, without numbering or explanations.
@@ -166,18 +167,20 @@ Question: ${question}`;
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,
       }),
-    )) as { text?: string };
+    )) as any;
     
-    if (!response.text) return [];
+    if (!response.candidates?.[0]?.content?.parts?.[0]?.text) return { questions: [], usage: null };
     
-    return response.text
+    const questions = response.candidates[0].content.parts[0].text
       .split('\n')
-      .map(q => q.trim())
-      .filter(q => q.length > 5 && q.includes('?'))
+      .map((q: string) => q.trim())
+      .filter((q: string) => q.length > 5 && q.includes('?'))
       .slice(0, structure.estimatedSubQuestions);
+
+    return { questions, usage: response.usageMetadata };
   } catch (e) {
     console.log("[RAG] Question breakdown failed:", e);
-    return [];
+    return { questions: [], usage: null };
   }
 }
 
@@ -220,9 +223,9 @@ export async function generateSearchQuery(
   ai: any,
   question: string,
   localContext: string
-): Promise<string> {
+): Promise<{ query: string, usage: any }> {
   if (!localContext || localContext.trim() === "None" || localContext.trim() === "") {
-    return question;
+    return { query: question, usage: null };
   }
   
   const prompt = `You are a search query rewriting assistant. The user asked a question, and we have some context about the user's background. 
@@ -246,18 +249,19 @@ Current Date: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month:
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,
       }),
-    )) as { text?: string };
+    )) as any;
     
-    if (response.text) {
+    const rewritten = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (rewritten) {
       // Clean up the response in case the model adds quotes or newlines
-      const rewritten = response.text.replace(/["\n]/g, '').trim();
-      console.log(`[RAG] Rewrote search query: "${question}" -> "${rewritten}"`);
-      return rewritten || question;
+      const cleaned = rewritten.replace(/["\n]/g, '').trim();
+      console.log(`[RAG] Rewrote search query: "${question}" -> "${cleaned}"`);
+      return { query: cleaned || question, usage: response.usageMetadata };
     }
   } catch (e) {
     console.log("[RAG] Query rewrite failed, falling back to original query:", e);
   }
-  return question;
+  return { query: question, usage: null };
 }
 
 /**
@@ -274,26 +278,48 @@ export async function performUncertaintyFallback(
   queryMode: 'core' | 'session' = 'core',
   sessionId?: string
 ): Promise<any> {
+  const totalStart = performance.now();
   console.log("[RAG] Performing uncertainty fallback", { 
     questionPreview: question.slice(0, 50),
     queryMode,
     sessionId: sessionId ? sessionId.slice(0, 10) + '...' : 'none'
   });
   
+  const stepDurations: Record<string, number> = {};
+  let promptTokens = 0;
+  let completionTokens = 0;
+
   // 1. Determine if we need fresh suggestions
   let suggestions: string[] = [];
   if (structure.isPersonal || (structure.isComplex && relevanceScore < 0.5)) {
-    suggestions = await suggestQuestionBreakdown(ai, question, structure);
+    const start = performance.now();
+    const breakdownResult = await suggestQuestionBreakdown(ai, question, structure);
+    suggestions = breakdownResult.questions;
+    stepDurations.breakdown = Math.round(performance.now() - start);
+    
+    promptTokens += breakdownResult.usage?.promptTokenCount || 0;
+    completionTokens += breakdownResult.usage?.candidatesTokenCount || 0;
   }
 
   // 2. Try web search fallback
+  const searchStart = performance.now();
   let webResults = queryCache.getWebSearch(question)?.results ?? null;
   let webCacheHit = false;
   
   if (!webResults) {
+    const rewriteStart = performance.now();
     const localContextForSearch = formatLocalContext(localResults);
-    const optimizedQuery = await generateSearchQuery(ai, question, localContextForSearch);
+    const rewriteResult = await generateSearchQuery(ai, question, localContextForSearch);
+    const optimizedQuery = rewriteResult.query;
+    stepDurations.searchRewrite = Math.round(performance.now() - rewriteStart);
+
+    promptTokens += rewriteResult.usage?.promptTokenCount || 0;
+    completionTokens += rewriteResult.usage?.candidatesTokenCount || 0;
+
+    const webExecStart = performance.now();
     webResults = await searchWeb(optimizedQuery);
+    stepDurations.webExecution = Math.round(performance.now() - webExecStart);
+
     if (webResults && webResults.length > 0) {
       queryCache.setWebSearch(question, { results: webResults });
     }
@@ -301,9 +327,11 @@ export async function performUncertaintyFallback(
     webCacheHit = true;
     console.log("[Cache] Web search cache hit (fallback path)");
   }
+  stepDurations.totalSearch = Math.round(performance.now() - searchStart);
 
   // 3. Synthesize final answer (Web + Local)
   if (webResults && webResults.length > 0) {
+    const synthesisStart = performance.now();
     const webContext = formatWebContext(webResults);
     const localContext = formatLocalContext(localResults);
     
@@ -324,7 +352,12 @@ export async function performUncertaintyFallback(
     3. If there is a conflict, state what you found in both sources.
     4. Start your answer by clearly stating what you found in their uploaded documents vs what you found on the web.`;
 
-    const answer = await getAnswer(ai, hybridPrompt);
+    const synthesisModel = AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0];
+    const { text: answer, usage: synthesisUsage } = await getAnswer(ai, hybridPrompt, synthesisModel);
+    stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
+
+    promptTokens += synthesisUsage?.promptTokenCount || 0;
+    completionTokens += synthesisUsage?.candidatesTokenCount || 0;
     
     const responseBody = {
       answer,
@@ -337,6 +370,20 @@ export async function performUncertaintyFallback(
       suggestedQuestions: suggestions.length > 0 ? suggestions : undefined,
       hint: suggestions.length > 0 ? "Your question appears complex. Try these simpler questions instead:" : undefined,
       _cache: { embeddingHit: embeddingCacheHit, webSearchHit: webCacheHit },
+      telemetry: {
+        totalDurationMs: Math.round(performance.now() - totalStart),
+        stepDurations,
+        relevanceScore: parseFloat(relevanceScore.toFixed(3)),
+        modelsUsed: {
+          synthesis: synthesisModel,
+          analysis: AI_MODELS.FAST_WORKHORSE,
+          embedding: AI_MODELS.EMBEDDING
+        },
+        cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: webCacheHit, responseHit: false },
+        promptTokens,
+        completionTokens,
+        totalTokens: promptTokens + completionTokens
+      }
     };
     
     queryCache.setResponse(question, responseBody, queryMode, sessionId);
@@ -346,12 +393,28 @@ export async function performUncertaintyFallback(
   }
 
   // 4. Final failure body if web search also failed
+  const finalTelemetry = {
+    totalDurationMs: Math.round(performance.now() - totalStart),
+    stepDurations,
+    relevanceScore: parseFloat(relevanceScore.toFixed(3)),
+    modelsUsed: {
+      synthesis: "none",
+      analysis: AI_MODELS.FAST_WORKHORSE,
+      embedding: AI_MODELS.EMBEDDING
+    },
+    cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: webCacheHit, responseHit: false },
+    promptTokens,
+    completionTokens,
+    totalTokens: promptTokens + completionTokens
+  };
+
   const failureBody = {
     answer: "I could not confidently answer from your RAG library and internet search returned no usable results. Please check Programmable Search scope (entire web) and API key restrictions.",
     sources: [],
     uncertainty: true,
     suggestedQuestions: suggestions.length > 0 ? suggestions : undefined,
     hint: suggestions.length > 0 ? "Your question appears complex. Try asking these simpler questions instead:" : undefined,
+    telemetry: finalTelemetry
   };
   
   return failureBody;

@@ -1,3 +1,4 @@
+import { performance } from "perf_hooks";
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { api } from "@shared/routes";
@@ -163,6 +164,9 @@ export async function registerRoutes(
   });
 
   app.post(api.rag.query.path, async (req, res) => {
+    const totalStart = performance.now();
+    const stepDurations: Record<string, number> = {};
+
     try {
       const { question, sessionId, queryMode } = api.rag.query.input.parse(req.body);
 
@@ -172,11 +176,35 @@ export async function registerRoutes(
         : null;
       if (cachedResponse) {
         console.log(`[Cache] Full response cache hit (${queryMode} mode)`);
+        void storage.insertQueryLog({
+          question,
+          queryMode: queryMode || 'core',
+          totalDurationMs: Math.round(performance.now() - totalStart),
+          relevanceScore: cachedResponse.relevanceScore || 0,
+          modelsUsed: { 
+            synthesis: "cache", 
+            analysis: "cache",
+            embedding: "cache" 
+          },
+          stepDurations: { total: Math.round(performance.now() - totalStart) },
+          cacheStatus: { 
+            embeddingHit: true, 
+            webSearchHit: false, // Don't claim a web hit if we just hit the response cache
+            responseHit: true 
+          },
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0
+        }).catch(e => console.error("[Telemetry] Failed to log cached query:", e));
+
         return res.json({ ...cachedResponse, _cacheHit: true });
       }
 
       // Analyze question structure upfront
+      const analysisStart = performance.now();
       const questionStructure = analyzeQuestionStructure(question);
+      stepDurations.analysis = Math.round(performance.now() - analysisStart);
+
       console.log("[RAG] Question analysis", {
         questionPreview: question.slice(0, 80),
         ...questionStructure,
@@ -193,6 +221,20 @@ export async function registerRoutes(
       }
       
       if (queryMode === 'session' && vectorStore.length === 0) {
+        // Log this early exit so we can track system friction
+        void storage.insertQueryLog({
+          question,
+          queryMode,
+          totalDurationMs: Math.round(performance.now() - totalStart),
+          relevanceScore: 0,
+          modelsUsed: { synthesis: "none", analysis: "none", embedding: "none" },
+          stepDurations: { total: Math.round(performance.now() - totalStart) },
+          cacheStatus: { embeddingHit: false, webSearchHit: false, responseHit: false },
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0
+        }).catch(e => console.error("[Telemetry] Failed to log empty session query:", e));
+
         return res.json({
           answer: "You haven't uploaded your resume for this session yet. Please paste your resume text in the 'Ingest document' section above and click 'Ingest' so I can analyze it for you.",
           sources: [],
@@ -201,6 +243,7 @@ export async function registerRoutes(
       
       let embeddingCacheHit = false;
       if (vectorStore.length > 0) {
+        const embedStart = performance.now();
         try {
           const cachedEmbedding = queryCache.getEmbedding(question);
           if (cachedEmbedding) {
@@ -210,9 +253,15 @@ export async function registerRoutes(
             embedding = await getEmbedding(ai, question);
             queryCache.setEmbedding(question, embedding);
           }
+          stepDurations.embedding = Math.round(performance.now() - embedStart);
         } catch (embedErr) {
           console.error("[RAG] Query embedding failed, falling back to web search", embedErr);
           const fallbackResponse = await performUncertaintyFallback(ai, question, [], 0, questionStructure, false, queryMode, sessionId);
+          void storage.insertQueryLog({
+            question,
+            queryMode: queryMode || 'core',
+            ...fallbackResponse.telemetry
+          }).catch(console.error);
           return res.json(fallbackResponse);
         }
       }
@@ -245,6 +294,12 @@ export async function registerRoutes(
       if (relevanceScore < 0.1 && !isHybridSearch) {
         console.log("[RAG] Quota Saver: Skipping local AI call (relevance too low)", { relevanceScore });
         const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, sessionId);
+        void storage.insertQueryLog({
+          question,
+          queryMode: queryMode || 'core',
+          ...fallbackResponse.telemetry
+        }).catch(console.error);
+        
         return res.json(fallbackResponse);
       }
 
@@ -256,17 +311,29 @@ export async function registerRoutes(
 
       if (shouldFallbackImmediately) {
         const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, sessionId);
+        void storage.insertQueryLog({
+          question,
+          queryMode: queryMode || 'core',
+          ...fallbackResponse.telemetry
+        }).catch(console.error);
         return res.json(fallbackResponse);
       }
 
       // Standard RAG Path
+      const synthesisStart = performance.now();
       const context = formatLocalContext(results);
       const sources = results.map((r) => r.content.substring(0, 50) + "...");
       const prompt = `You are a helpful assistant. Answer based ONLY on the following context. If unknown, say you don't know.\n\nContext:\n${context}\n\nQuestion: ${question}`;
-      const answer = await getAnswer(ai, prompt);
+      const { text: answer, usage: synthesisUsage } = await getAnswer(ai, prompt);
+      stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
       
       if (isUncertainAnswer(answer)) {
         const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, sessionId);
+        void storage.insertQueryLog({
+          question,
+          queryMode: queryMode || 'core',
+          ...fallbackResponse.telemetry
+        }).catch(console.error);
         return res.json(fallbackResponse);
       }
 
@@ -275,11 +342,31 @@ export async function registerRoutes(
         sources,
         relevanceScore: Number(relevanceScore.toFixed(4)),
         isAdviceQuestion: questionStructure.isAdviceQuestion,
-        _cache: { embeddingHit: embeddingCacheHit, webSearchHit: false }
+        _cache: { embeddingHit: embeddingCacheHit, webSearchHit: false },
+        telemetry: {
+          totalDurationMs: Math.round(performance.now() - totalStart),
+          stepDurations,
+          relevanceScore: parseFloat(relevanceScore.toFixed(3)),
+          modelsUsed: {
+            synthesis: AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
+            analysis: "local-rag",
+            embedding: AI_MODELS.EMBEDDING
+          },
+          cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: false, responseHit: false },
+          promptTokens: synthesisUsage?.promptTokenCount || 0,
+          completionTokens: synthesisUsage?.candidatesTokenCount || 0,
+          totalTokens: synthesisUsage?.totalTokenCount || 0
+        }
       };
 
       queryCache.setResponse(question, successBody, queryMode, sessionId);
       if (AI_CONFIG.DEMO_MODE) queryCache.saveToDisk();
+
+      void storage.insertQueryLog({
+        question,
+        queryMode: queryMode || 'core',
+        ...successBody.telemetry
+      }).catch(console.error);
       
       return res.json(successBody);
     } catch (error) {

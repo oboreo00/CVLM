@@ -1,4 +1,4 @@
-import { pgTable, text, serial, jsonb, vector } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, jsonb, vector, integer, numeric, timestamp } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { createHash } from "crypto";
@@ -21,6 +21,21 @@ export const documents = pgTable("documents", {
   content: text("content").notNull(),
   metadata: jsonb("metadata"),
   embedding: vector("embedding", { dimensions: 3072 }),
+});
+
+export const queryLogs = pgTable("query_logs", {
+  id: serial("id").primaryKey(),
+  question: text("question").notNull(),
+  queryMode: text("query_mode").notNull(),
+  totalDurationMs: integer("total_duration_ms").notNull(),
+  relevanceScore: numeric("relevance_score"),
+  modelsUsed: jsonb("models_used"), // {synthesis: string, analysis: string, embedding: string}
+  stepDurations: jsonb("step_durations"), // {embedding: ms, analysis: ms, ...}
+  cacheStatus: jsonb("cache_status"), // {embeddingHit: bool, webSearchHit: bool, responseHit: bool}
+  promptTokens: integer("prompt_tokens"),
+  completionTokens: integer("completion_tokens"),
+  totalTokens: integer("total_tokens"),
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 export const insertDocumentSchema = 
