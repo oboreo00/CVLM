@@ -286,6 +286,7 @@ export default function Home() {
               </div>
             </>
           )}
+          <p className="rag-footer-note">Query text and usage metadata (model, token, cache status) are logged for performance monitoring</p>
         </div>
         <About open={showReadmeModal} onOpenChange={setShowReadmeModal} />
       </div>

@@ -575,3 +575,12 @@
   color: #dcf2df;
   font-weight: 500;
 }
+
+.rag-footer-note {
+  margin-top: 2rem;
+  font-size: 0.65rem;
+  color: #43674c;
+  text-align: center;
+  font-weight: 300;
+  letter-spacing: 0.02em;
+}

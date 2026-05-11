@@ -165,6 +165,19 @@ The backend provides two main endpoints:
    - **Hybrid Web Search:** If your query requires external knowledge (e.g., current salary data), CVLM automatically rewrites your query using your local context (e.g., location extracted from your resume) and queries the web.
    - A final synthesis step combines your local ground truth with web search results to provide a comprehensive, context-aware answer.
 
+## Observability & Telemetry
+
+CVLM is built with a "Production-First" mindset regarding observability. Every query execution is traced and logged into a dedicated telemetry table, providing a rich foundation for performance tuning.
+
+### Key Telemetry Data
+- **Step Latency Breakdown:** Identifies bottlenecks by measuring individual durations for Analysis, Embedding, Web Search, and Synthesis.
+- **Model Attribution:** Records exactly which model handled each stage of the orchestration (e.g., Flash for analysis vs. Pro for answering).
+- **Token Accounting:** Captures precise prompt and completion token counts to enable cost-per-query analysis.
+- **Retrieval Quality:** Logs the `relevanceScore` of every vector search to help fine-tune retrieval thresholds and chunking strategies.
+- **Cache Performance:** Tracks hit/miss status for the multi-layer caching system.
+
+This detailed instrumentation serves as a foundation for any observability specialist to understand the internal decision-making of the RAG engine. While the current implementation persists raw data to PostgreSQL, the architecture is designed to eventually integrate with aggregated data analysis tools like **Datadog**, **LangSmith**, or **Honeycomb** for long-term trend analysis and anomaly detection.
+
 ## Usage Workflow
 
 1. **Start the server:** `npm run dev`
@@ -185,6 +198,18 @@ The application uses a unified document storage schema:
   - `content` (text, required)
   - `metadata` (jsonb, optional)
   - `embedding` (vector(3072)) — Stores high-precision embeddings from the `gemini-embedding-2` model for `pgvector` comparison.
+
+- **query_logs** table:
+  - `id` (serial, primary key)
+  - `question` (text) — The raw user query.
+  - `query_mode` (text) — Whether the query was against 'core' or 'session' data.
+  - `total_duration_ms` (integer) — Total end-to-end response time.
+  - `relevance_score` (numeric) — The blended retrieval confidence score.
+  - `models_used` (jsonb) — Mapping of steps to specific AI models.
+  - `step_durations` (jsonb) — Micro-latencies for each phase of execution.
+  - `cache_status` (jsonb) — Hit/miss data for the caching layers.
+  - `prompt_tokens` / `completion_tokens` (integer) — Usage metrics for cost tracking.
+  - `created_at` (timestamp) — Temporal marker for log analysis.
 
 ## Troubleshooting
 
