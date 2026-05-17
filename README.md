@@ -12,7 +12,7 @@ CVLM is not just a standard document parser; it is a smart, hybrid knowledge gra
 
 ### Key Features
 - **Smart Query Analysis:** Detects complex questions and suggests logical breakdowns.
-- **Multi-Tenant Session Isolation:** Allows visitors to safely upload and query their own transient resumes without polluting the core knowledge graph.
+- **Supabase Authentication & Data Protection:** Integrates the `@supabase/supabase-js` client to issue anonymous JWTs, ensuring isolated sessions and robust data protection. Visitors can safely upload and query transient resumes without polluting the core knowledge graph, while preventing unauthorized bots or anonymous keys from reading cross-session data.
 - **Automated Data Lifecycle:** Transient session vectors are aggressively cleaned up via an automated 24-hour TTL (Time-To-Live) background job.
 - **Hybrid Search Architecture:** Leverages local `pgvector` embeddings alongside dynamic fallback to live web search for gaps in knowledge.
 - **Context-Aware Query Rewriting:** Automatically injects your local context (e.g., location, seniority) into web search queries.
@@ -33,11 +33,24 @@ Before using CVLM, ensure you have:
 Create a `.env` file in the root directory with the following variables:
 
 ```env
-# Database connection string
-DATABASE_URL=postgresql://username:password@localhost:5432/database_name
+# Database connection string (Supabase local Postgres instance)
+DATABASE_URL="postgresql://postgres:postgres@127.0.0.1:54322/postgres"
 
-# Google Gemini API Key (required for RAG functionality)
+# Supabase Auth Configuration
+VITE_SUPABASE_URL=http://127.0.0.1:54321
+VITE_SUPABASE_ANON_KEY=your_supabase_anon_key_here
+JWT_SECRET=super-secret-jwt-token-with-at-least-32-characters-long
+
+# Google Gemini API Key (required for standard AI Studio RAG functionality)
 GEMINI_API_KEY=your_gemini_api_key_here
+
+# Vertex AI Toggle & Project Information
+USE_VERTEX_AI=false
+GCP_PROJECT_ID=your-project-id
+GCP_LOCATION=your-region
+
+# Google Cloud Service Account JSON Key (Optional, paste entire JSON string for Serverless/Railway deployment)
+GOOGLE_CREDS_JSON=
 
 # Anthropic API Key (for future multi-provider support)
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
@@ -63,7 +76,12 @@ NODE_ENV=development
    npm install
    ```
 
-2. **Set up the database:**
+2. **Start the local Supabase stack:**
+   ```bash
+   npx supabase start
+   ```
+
+3. **Set up the database schema:**
    ```bash
    npm run db:push
    ```
@@ -154,16 +172,27 @@ The backend provides two main endpoints:
 
 ## How It Works Under the Hood
 
-1. **Document Ingestion:**
+1. **Secure Session Management & Data Isolation:**
+   - The React frontend uses the `@supabase/supabase-js` client to automatically issue anonymous JWTs upon arrival.
+   - The backend natively validates these JWTs using the local Supabase GoTrue container to securely extract the authenticated `user_id`.
+   - All private `documents` and `query_logs` are tied directly to this `user_id`. This prevents unauthorized bots with just an `anon_key` from snooping on telemetry or reading cross-session documents, laying the foundation for strict Postgres Row-Level Security (RLS).
+
+2. **Document Ingestion:**
    - Text is converted into an embedding vector using Google's `gemini-embedding-2` model. This specific model is used to ensure all vectors in the store are comparable and high-dimensional.
-   - If a `sessionId` is provided, the vectors are tagged and given a 24-hour TTL (Time-To-Live) for automatic cleanup.
+   - If a `userId` is provided, the vectors are tagged and given a 24-hour TTL (Time-To-Live) for automatic cleanup.
    - Vectors are stored in PostgreSQL using the `pgvector` extension for efficient and accurate cosine similarity searches. An in-memory LRU cache also tracks active session vectors for sub-millisecond lookups.
 
-2. **Smart Query Processing:**
+3. **Smart Query Processing:**
    - CVLM explicitly segments the vector search based on `queryMode` and `sessionId` to prevent cross-contamination of resumes.
    - It performs a cosine similarity search against the isolated vector graph.
    - **Hybrid Web Search:** If your query requires external knowledge (e.g., current salary data), CVLM automatically rewrites your query using your local context (e.g., location extracted from your resume) and queries the web.
    - A final synthesis step combines your local ground truth with web search results to provide a comprehensive, context-aware answer.
+
+4. **Multi-Platform GeminiAdapter:**
+   - CVLM orchestrates all generative, embedding, and web search operations through a unified **`GeminiAdapter`** layer.
+   - By simply toggling `USE_VERTEX_AI=true/false` in your `.env` file, the adapter dynamically routes requests through either the **Google AI Studio Developer API** (using `@google/genai`) or **Google Cloud Vertex AI** (using `@google-cloud/vertexai`).
+   - The adapter normalizes all platform-specific differences (such as model-naming prefixes, tool configuration arrays, and response schemas) into a single standard format. 
+   - Additionally, it features a dynamic credentials bootstrap designed for containerized/serverless environments (like **Railway**): pasting a Google Cloud service account JSON into the `GOOGLE_CREDS_JSON` environment variable will automatically bootstrap and authenticate your container at startup without checking any secrets into git!
 
 ## Observability & Telemetry
 

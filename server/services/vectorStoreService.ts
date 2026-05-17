@@ -31,8 +31,8 @@ export function addToVectorStore(doc: VectorDoc): void {
   vectorStore.push(doc);
 }
 
-export function removeFromVectorStoreBySession(sessionId: string): void {
-  vectorStore = vectorStore.filter(doc => doc.metadata?.sessionId !== sessionId);
+export function removeFromVectorStoreBySession(userId: string): void {
+  vectorStore = vectorStore.filter(doc => doc.metadata?.userId !== userId);
 }
 
 export async function cleanupExpiredSessions(): Promise<void> {

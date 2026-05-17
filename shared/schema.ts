@@ -1,4 +1,4 @@
-import { pgTable, text, serial, jsonb, vector, integer, numeric, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, jsonb, vector, integer, numeric, timestamp, uuid } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { createHash } from "crypto";
@@ -21,6 +21,7 @@ export const documents = pgTable("documents", {
   content: text("content").notNull(),
   metadata: jsonb("metadata"),
   embedding: vector("embedding", { dimensions: 3072 }),
+  userId: uuid("user_id"),
 });
 
 export const queryLogs = pgTable("query_logs", {
@@ -36,6 +37,8 @@ export const queryLogs = pgTable("query_logs", {
   completionTokens: integer("completion_tokens"),
   totalTokens: integer("total_tokens"),
   createdAt: timestamp("created_at").defaultNow(),
+  userId: uuid("user_id"),
+  provider: text("provider"),
 });
 
 export const insertDocumentSchema = 
@@ -53,12 +56,12 @@ export type InsertDocument = z.infer<typeof insertDocumentSchema>;
 // Request types
 export const ingestSchema = z.object({
   text: z.string().min(1),
-  sessionId: z.string().optional(),
+  userId: z.string().optional(),
 });
 
 export const querySchema = z.object({
   question: z.string().min(1),
-  sessionId: z.string().optional(),
+  userId: z.string().optional(),
   queryMode: z.enum(["core", "session"]).optional(),
 });
 

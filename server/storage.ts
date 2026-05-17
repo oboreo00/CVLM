@@ -7,7 +7,7 @@ export interface IStorage {
   getDocuments(): Promise<Document[]>;
   addDocuments(docs: InsertDocument[]): Promise<Document[]>;
   deleteExpiredSessions(): Promise<void>;
-  deleteSessionDocuments(sessionId: string): Promise<void>;
+  deleteUserDocuments(userId: string): Promise<void>;
   insertQueryLog(log: any): Promise<void>;
 }
 
@@ -39,10 +39,8 @@ export class DatabaseStorage implements IStorage {
     );
   }
 
-  async deleteSessionDocuments(sessionId: string): Promise<void> {
-    await db.execute(
-      sql`DELETE FROM documents WHERE metadata->>'sessionId' = ${sessionId}`
-    );
+  async deleteUserDocuments(userId: string): Promise<void> {
+    await db.delete(documents).where(eq(documents.userId, userId));
   }
 
   async insertQueryLog(log: any): Promise<void> {

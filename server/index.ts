@@ -1,10 +1,27 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-import { createServer } from "http";
+import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
+
+// Bootstrap GCP credentials dynamically from env variable on Serverless / Railway
+if (process.env.GOOGLE_CREDS_JSON) {
+  try {
+    const credsPath = path.join("/tmp", "gcp-creds.json");
+    fs.writeFileSync(credsPath, process.env.GOOGLE_CREDS_JSON);
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = credsPath;
+    console.log("[GCP] Dynamically loaded credentials from GOOGLE_CREDS_JSON");
+  } catch (err) {
+    console.error("[GCP] Failed to write dynamic credentials:", err);
+  }
+}
+
+import { createServer } from "http";
 import express, { type Request, Response, NextFunction } from "express";
+import { createClient } from "@supabase/supabase-js";
+import WebSocket from "ws";
+
+(globalThis as any).WebSocket = WebSocket;
 
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
@@ -66,6 +83,33 @@ app.use((req, res, next) => {
     }
   });
 
+  next();
+});
+
+// Middleware to extract Supabase JWT and inject userId into req.body
+app.use("/api", async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.substring(7);
+    try {
+      const supabase = createClient(
+        process.env.VITE_SUPABASE_URL || "",
+        process.env.VITE_SUPABASE_ANON_KEY || "",
+        {
+          auth: { persistSession: false }
+        }
+      );
+      
+      const { data, error } = await supabase.auth.getUser(token);
+      if (error) {
+        console.error("Supabase getUser error:", error.message);
+      } else if (data?.user) {
+        req.body.userId = data.user.id; // Inject userId so schemas can parse it
+      }
+    } catch (err) {
+      console.error("JWT verification failed:", err);
+    }
+  }
   next();
 });
 

@@ -3,13 +3,13 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { api } from "@shared/routes";
 import { z } from "zod";
-import { GoogleGenAI } from "@google/genai";
+import { GeminiAdapter } from "./services/geminiAdapter";
 import { storage } from "./storage";
 import { withGeminiRetries, cosineSimilarity, getAnswer, isUncertainAnswer } from "./services/geminiClient";
 import { searchWeb, type WebSearchItem } from "./services/webSearch";
-import { 
-  analyzeQuestionStructure, 
-  getQuestionRelevanceScore, 
+import {
+  analyzeQuestionStructure,
+  getQuestionRelevanceScore,
   suggestQuestionBreakdown,
   generateSearchQuery,
   performUncertaintyFallback,
@@ -54,9 +54,12 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // Initialize Gemini client
-  // Note: This requires GEMINI_API_KEY env var to be set
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+  const ai = new GeminiAdapter({
+    useVertex: process.env.USE_VERTEX_AI === "true",
+    apiKey: process.env.GEMINI_API_KEY,
+    projectId: process.env.GCP_PROJECT_ID,
+    location: process.env.GCP_LOCATION,
+  });
 
   //const model = ai.getGenerativeModel({        model: AI_MODELS.FAST_WORKHORSE, });
   // const embeddingModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
@@ -72,7 +75,7 @@ export async function registerRoutes(
         name: m.name,
         actions: m.supportedActions,
       });
-    }  
+    }
   }
 
   // Don't block HTTP + Vite startup on embeddings (Gemini outages can hang for minutes).
@@ -86,13 +89,13 @@ export async function registerRoutes(
   // just start fresh or lazy-load if we added persistence for embeddings.
   // To keep it fast and minimal, we'll start with empty vector store
   // and only use what's added in this session or implement simple re-indexing.
-  
+
   // For the purpose of this "minimal demo", we won't re-embed everything on restart 
   // to avoid API costs/latency loop, but we will store text in DB.
-  
+
   // Initialize cache and load from disk
   queryCache.loadFromDisk();
-  
+
   // Periodically persist cache to disk (every 5 mins)
   setInterval(() => queryCache.saveToDisk(), 5 * 60 * 1000);
 
@@ -110,7 +113,7 @@ export async function registerRoutes(
 
   app.post(api.rag.ingest.path, async (req, res) => {
     try {
-      const { text, sessionId } = api.rag.ingest.input.parse(req.body);
+      const { text, userId } = api.rag.ingest.input.parse(req.body);
 
       // 1. Generate Embedding
       const embedding = await getEmbedding(ai, text);
@@ -119,25 +122,25 @@ export async function registerRoutes(
       // 2. Extract Identity Metadata
       const identityMetadata = await extractDocumentMetadata(ai, text);
       console.log("[RAG] Extracted identity:", identityMetadata);
-      
+
       // 3. Clear previous session data if this is a session-based upload
       // This prevents "cumulative knowledge" where old resumes hang around
-      if (sessionId) {
-        console.log(`[RAG] Updating resume for session ${sessionId}: clearing old documents`);
-        await storage.deleteSessionDocuments(sessionId);
-        removeFromVectorStoreBySession(sessionId);
+      if (userId) {
+        console.log(`[RAG] Updating resume for user ${userId}: clearing old documents`);
+        await storage.deleteUserDocuments(userId);
+        removeFromVectorStoreBySession(userId); // still use same func but pass userId
       }
 
       // 4. Store in DB (for persistence)
       let metadata: any = { ...identityMetadata };
-      if (sessionId) {
+      if (userId) {
         metadata = {
           ...metadata,
-          sessionId,
+          userId,
           expiresAt: Date.now() + 24 * 60 * 60 * 1000,
         };
       }
-      const doc = await storage.createDocument({ content: text, metadata, embedding });
+      const doc = await storage.createDocument({ content: text, metadata, embedding, userId });
 
       // 3. Update in-memory vector store
       addToVectorStore({
@@ -149,11 +152,11 @@ export async function registerRoutes(
 
       // 4. Invalidate response caches since new knowledge was added
       // This prevents serving stale answers that should now be updated
-      if (!sessionId) {
+      if (!userId) {
         queryCache.invalidateOnDocumentIngest(doc.id);
       } else {
         // For session-based uploads, specifically clear the previous analysis of that session
-        queryCache.invalidateSessionCache(sessionId);
+        queryCache.invalidateSessionCache(userId);
       }
 
       res.json({ success: true, message: "Document ingested successfully" });
@@ -168,33 +171,35 @@ export async function registerRoutes(
     const stepDurations: Record<string, number> = {};
 
     try {
-      const { question, sessionId, queryMode } = api.rag.query.input.parse(req.body);
+      const { question, userId, queryMode } = api.rag.query.input.parse(req.body);
 
       // 0. Check response cache first (only for core queries unless in demo mode)
-      const cachedResponse = (queryMode !== 'session' || AI_CONFIG.DEMO_MODE) 
-        ? queryCache.getResponse(question, queryMode, sessionId) 
+      const cachedResponse = (queryMode !== 'session' || AI_CONFIG.DEMO_MODE)
+        ? queryCache.getResponse(question, queryMode, userId)
         : null;
       if (cachedResponse) {
         console.log(`[Cache] Full response cache hit (${queryMode} mode)`);
         void storage.insertQueryLog({
           question,
           queryMode: queryMode || 'core',
+          userId,
           totalDurationMs: Math.round(performance.now() - totalStart),
           relevanceScore: cachedResponse.relevanceScore || 0,
-          modelsUsed: { 
-            synthesis: "cache", 
+          modelsUsed: {
+            synthesis: "cache",
             analysis: "cache",
-            embedding: "cache" 
+            embedding: "cache"
           },
           stepDurations: { total: Math.round(performance.now() - totalStart) },
-          cacheStatus: { 
-            embeddingHit: true, 
+          cacheStatus: {
+            embeddingHit: true,
             webSearchHit: false, // Don't claim a web hit if we just hit the response cache
-            responseHit: true 
+            responseHit: true
           },
           promptTokens: 0,
           completionTokens: 0,
-          totalTokens: 0
+          totalTokens: 0,
+          provider: "cache"
         }).catch(e => console.error("[Telemetry] Failed to log cached query:", e));
 
         return res.json({ ...cachedResponse, _cacheHit: true });
@@ -213,18 +218,19 @@ export async function registerRoutes(
       // 1. Try local RAG first (if we have local vectors)
       let embedding: number[] = [];
       let vectorStore = getVectorStore();
-      
-      if (queryMode === 'session' && sessionId) {
-        vectorStore = vectorStore.filter(doc => doc.metadata?.sessionId === sessionId);
+
+      if (queryMode === 'session' && userId) {
+        vectorStore = vectorStore.filter(doc => doc.metadata?.userId === userId);
       } else {
-        vectorStore = vectorStore.filter(doc => !doc.metadata?.sessionId);
+        vectorStore = vectorStore.filter(doc => !doc.metadata?.userId);
       }
-      
+
       if (queryMode === 'session' && vectorStore.length === 0) {
         // Log this early exit so we can track system friction
         void storage.insertQueryLog({
           question,
           queryMode,
+          userId,
           totalDurationMs: Math.round(performance.now() - totalStart),
           relevanceScore: 0,
           modelsUsed: { synthesis: "none", analysis: "none", embedding: "none" },
@@ -232,7 +238,8 @@ export async function registerRoutes(
           cacheStatus: { embeddingHit: false, webSearchHit: false, responseHit: false },
           promptTokens: 0,
           completionTokens: 0,
-          totalTokens: 0
+          totalTokens: 0,
+          provider: "none"
         }).catch(e => console.error("[Telemetry] Failed to log empty session query:", e));
 
         return res.json({
@@ -240,7 +247,7 @@ export async function registerRoutes(
           sources: [],
         });
       }
-      
+
       let embeddingCacheHit = false;
       if (vectorStore.length > 0) {
         const embedStart = performance.now();
@@ -256,10 +263,11 @@ export async function registerRoutes(
           stepDurations.embedding = Math.round(performance.now() - embedStart);
         } catch (embedErr) {
           console.error("[RAG] Query embedding failed, falling back to web search", embedErr);
-          const fallbackResponse = await performUncertaintyFallback(ai, question, [], 0, questionStructure, false, queryMode, sessionId);
+          const fallbackResponse = await performUncertaintyFallback(ai, question, [], 0, questionStructure, false, queryMode, userId);
           void storage.insertQueryLog({
             question,
             queryMode: queryMode || 'core',
+            userId,
             ...fallbackResponse.telemetry
           }).catch(console.error);
           return res.json(fallbackResponse);
@@ -268,12 +276,12 @@ export async function registerRoutes(
 
       const results = vectorStore.length > 0
         ? vectorStore
-            .map((doc) => ({
-              ...doc,
-              similarity: cosineSimilarity(embedding, doc.embedding),
-            }))
-            .sort((a, b) => b.similarity - a.similarity)
-            .slice(0, 3)
+          .map((doc) => ({
+            ...doc,
+            similarity: cosineSimilarity(embedding, doc.embedding),
+          }))
+          .sort((a, b) => b.similarity - a.similarity)
+          .slice(0, 3)
         : [];
 
       const relevanceScore = getQuestionRelevanceScore(embedding, vectorStore);
@@ -281,7 +289,7 @@ export async function registerRoutes(
 
       console.log("[RAG] Query State:", {
         queryMode,
-        sessionId: sessionId?.slice(0, 10),
+        userId: userId,
         vectorStoreSize: vectorStore.length,
         resultsCount: results.length,
         relevanceScore: relevanceScore.toFixed(4),
@@ -293,13 +301,14 @@ export async function registerRoutes(
       // QUOTA SAVER: If relevance is extremely low, skip the local AI call.
       if (relevanceScore < 0.1 && !isHybridSearch) {
         console.log("[RAG] Quota Saver: Skipping local AI call (relevance too low)", { relevanceScore });
-        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, sessionId);
+        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, userId);
         void storage.insertQueryLog({
           question,
           queryMode: queryMode || 'core',
+          userId,
           ...fallbackResponse.telemetry
         }).catch(console.error);
-        
+
         return res.json(fallbackResponse);
       }
 
@@ -310,10 +319,11 @@ export async function registerRoutes(
       const shouldFallbackImmediately = results.length === 0;
 
       if (shouldFallbackImmediately) {
-        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, sessionId);
+        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, userId);
         void storage.insertQueryLog({
           question,
           queryMode: queryMode || 'core',
+          userId,
           ...fallbackResponse.telemetry
         }).catch(console.error);
         return res.json(fallbackResponse);
@@ -326,19 +336,20 @@ export async function registerRoutes(
       const prompt = `You are a helpful assistant. Answer based ONLY on the following context. If unknown, say you don't know.\n\nContext:\n${context}\n\nQuestion: ${question}`;
       const { text: answer, usage: synthesisUsage } = await getAnswer(ai, prompt);
       stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
-      
+
       if (isUncertainAnswer(answer)) {
-        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, sessionId);
+        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, userId);
         void storage.insertQueryLog({
           question,
           queryMode: queryMode || 'core',
+          userId,
           ...fallbackResponse.telemetry
         }).catch(console.error);
         return res.json(fallbackResponse);
       }
 
-      const successBody = { 
-        answer, 
+      const successBody = {
+        answer,
         sources,
         relevanceScore: Number(relevanceScore.toFixed(4)),
         isAdviceQuestion: questionStructure.isAdviceQuestion,
@@ -347,6 +358,7 @@ export async function registerRoutes(
           totalDurationMs: Math.round(performance.now() - totalStart),
           stepDurations,
           relevanceScore: parseFloat(relevanceScore.toFixed(3)),
+          provider: process.env.USE_VERTEX_AI === "true" ? "GCP Vertex AI" : "Google AI Studio",
           modelsUsed: {
             synthesis: AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
             analysis: "local-rag",
@@ -359,15 +371,16 @@ export async function registerRoutes(
         }
       };
 
-      queryCache.setResponse(question, successBody, queryMode, sessionId);
+      queryCache.setResponse(question, successBody, queryMode, userId);
       if (AI_CONFIG.DEMO_MODE) queryCache.saveToDisk();
 
       void storage.insertQueryLog({
         question,
         queryMode: queryMode || 'core',
+        userId,
         ...successBody.telemetry
       }).catch(console.error);
-      
+
       return res.json(successBody);
     } catch (error) {
       console.error("Query error:", error);

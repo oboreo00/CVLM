@@ -12,6 +12,7 @@ vite.config.ts.*
 knowledge/persistent_cache.json
 .local/
 scratch/
+.supabase/
 
 # Logs
 *.log

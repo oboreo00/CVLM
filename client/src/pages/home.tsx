@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { supabase } from "@/lib/supabase";
 import {
   Tooltip,
   TooltipContent,
@@ -20,7 +21,6 @@ export default function Home() {
   const [loadingQuery, setLoadingQuery] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isHighlighting, setIsHighlighting] = useState(false);
-  const [sessionId, setSessionId] = useState<string>("");
   const [queryMode, setQueryMode] = useState<"core" | "session">("core");
   const [hasResume, setHasResume] = useState(false);
   const [showIngestField, setShowIngestField] = useState(false);
@@ -30,35 +30,39 @@ export default function Home() {
   const { toast } = useToast();
 
   useEffect(() => {
-    let storedSessionId = localStorage.getItem("cvlm_session_id");
-    if (!storedSessionId) {
-      storedSessionId = "sess_" + Math.random().toString(36).substring(2, 15);
-      localStorage.setItem("cvlm_session_id", storedSessionId);
-    }
-    setSessionId(storedSessionId);
-  }, []);
-
-  useEffect(() => {
-    if (!sessionId) return;
-    
     // Check if session already has a resume
-    fetch(`/api/rag/session-status/${sessionId}`)
-      .then(res => res.json())
-      .then(data => {
+    const checkStatus = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+      
+      try {
+        const res = await fetch(`/api/rag/session-status`, {
+          headers: {
+            "Authorization": `Bearer ${session.access_token}`
+          }
+        });
+        const data = await res.json();
         if (data.hasDocument) setHasResume(true);
-      })
-      .catch(err => console.error("Failed to check session status", err));
-  }, [sessionId]);
+      } catch (err) {
+        console.error("Failed to check session status", err);
+      }
+    };
+    checkStatus();
+  }, []);
 
   async function handleIngest() {
     if (!ingestText.trim()) return;
     setLoadingIngest(true);
     setError(null);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session) headers["Authorization"] = `Bearer ${session.access_token}`;
+
       const res = await fetch("/api/rag/ingest", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: ingestText, sessionId }),
+        headers,
+        body: JSON.stringify({ text: ingestText }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -95,10 +99,14 @@ export default function Home() {
     setSuggestedQuestions([]);
     setHint(null);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (session) headers["Authorization"] = `Bearer ${session.access_token}`;
+
       const res = await fetch("/api/rag/query", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: q, sessionId, queryMode }),
+        headers,
+        body: JSON.stringify({ question: q, queryMode }),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -273,9 +281,9 @@ export default function Home() {
                     <div>
                       {suggestedQuestions.map((sq, i) => (
                         <button
-                          key={i}
-                          className="rag-suggestion-btn"
-                          onClick={() => handleSuggestedQuestion(sq)}
+                           key={i}
+                           className="rag-suggestion-btn"
+                           onClick={() => handleSuggestedQuestion(sq)}
                         >
                           {sq}
                         </button>

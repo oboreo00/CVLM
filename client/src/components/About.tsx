@@ -26,8 +26,8 @@ export default function About({ open, onOpenChange }: AboutProps) {
           <h3>Smart Query Analysis</h3>
           <p>Detects complex questions and suggests logical breakdowns for thorough answers.</p>
 
-          <h3>Multi-Tenant Session Isolation</h3>
-          <p>Allows visitors to safely upload and query their own transient resumes without polluting the core knowledge graph.</p>
+          <h3>Supabase Auth & Session Isolation</h3>
+          <p>Secured with anonymous sign-ins and Postgres Row-Level Security (RLS) to ensure recruiters' transient resumes remain completely isolated, private, and out of reach from unauthorized bots or cross-session access.</p>
 
           <h3>Hybrid Search Architecture</h3>
           <p>Leverages local vector embeddings alongside dynamic fallback to live web search for gaps in knowledge.</p>
@@ -66,9 +66,9 @@ export default function About({ open, onOpenChange }: AboutProps) {
           <h2>Architecture Highlights</h2>
           <ul>
             <li><strong>Vector Store:</strong> PostgreSQL with pgvector for semantic search</li>
-            <li><strong>AI Models:</strong> Google Gemini for embeddings and text generation</li>
+            <li><strong>AI Foundation:</strong> Google Gemini API via Google AI Studio, with a unified adapter designed to seamlessly pivot to enterprise Google Cloud Vertex AI</li>
             <li><strong>Web Integration:</strong> Fallback to live web search for out-of-domain queries</li>
-            <li><strong>Session Management:</strong> 24-hour TTL for transient documents</li>
+            <li><strong>Session & Security:</strong> Anonymous Supabase authentication paired with strict database-level Postgres Row-Level Security (RLS) and automatic 24-hour TTL document deletion</li>
             <li><strong>Response Caching:</strong> Semantic cache for repeated queries</li>
             <li><strong>Hosting:</strong> Hosted on Railway as a Node.js app connecting to a Supabase database</li>
           </ul>

@@ -317,7 +317,7 @@ export async function performUncertaintyFallback(
     completionTokens += rewriteResult.usage?.candidatesTokenCount || 0;
 
     const webExecStart = performance.now();
-    webResults = await searchWeb(optimizedQuery);
+    webResults = await searchWeb(ai, optimizedQuery);
     stepDurations.webExecution = Math.round(performance.now() - webExecStart);
 
     if (webResults && webResults.length > 0) {
@@ -374,6 +374,7 @@ export async function performUncertaintyFallback(
         totalDurationMs: Math.round(performance.now() - totalStart),
         stepDurations,
         relevanceScore: parseFloat(relevanceScore.toFixed(3)),
+        provider: process.env.USE_VERTEX_AI === "true" ? "GCP Vertex AI" : "Google AI Studio",
         modelsUsed: {
           synthesis: synthesisModel,
           analysis: AI_MODELS.FAST_WORKHORSE,
@@ -397,6 +398,7 @@ export async function performUncertaintyFallback(
     totalDurationMs: Math.round(performance.now() - totalStart),
     stepDurations,
     relevanceScore: parseFloat(relevanceScore.toFixed(3)),
+    provider: process.env.USE_VERTEX_AI === "true" ? "GCP Vertex AI" : "Google AI Studio",
     modelsUsed: {
       synthesis: "none",
       analysis: AI_MODELS.FAST_WORKHORSE,

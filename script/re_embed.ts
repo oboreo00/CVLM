@@ -4,9 +4,14 @@ import "dotenv/config";
 import { db } from "../server/db";
 import { documents } from "../shared/schema";
 import { isNull, eq } from "drizzle-orm";
-import { GoogleGenAI } from "@google/genai";
+import { GeminiAdapter } from "../server/services/geminiAdapter";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const ai = new GeminiAdapter({
+  useVertex: process.env.USE_VERTEX_AI === "true",
+  apiKey: process.env.GEMINI_API_KEY,
+  projectId: process.env.GCP_PROJECT_ID,
+  location: process.env.GCP_LOCATION,
+});
 
 async function getEmbedding(prompt: string): Promise<number[]> {
   const response = await ai.models.embedContent({

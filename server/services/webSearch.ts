@@ -13,14 +13,14 @@ export type WebSearchProvider = 'gemini' | 'anthropic';
  * Searches the web using the specified provider
  * Returns structured web results with title, snippet, and link
  */
-export async function searchWeb(query: string, provider: WebSearchProvider = 'gemini'): Promise<WebSearchItem[]> {
+export async function searchWeb(ai: any, query: string, provider: WebSearchProvider = 'gemini'): Promise<WebSearchItem[]> {
   console.log("[RAG] searchWeb called", {
     queryPreview: query.slice(0, 80),
     provider,
   });
 
   if (provider === 'gemini') {
-    return searchWebGemini(query);
+    return searchWebGemini(ai, query);
   } else if (provider === 'anthropic') {
     return searchWebAnthropic(query);
   }
@@ -28,39 +28,21 @@ export async function searchWeb(query: string, provider: WebSearchProvider = 'ge
   return [];
 }
 
-async function searchWebGemini(query: string): Promise<WebSearchItem[]> {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return [];
+async function searchWebGemini(ai: any, query: string): Promise<WebSearchItem[]> {
+  if (!ai) return [];
 
   // Use the verified model from our central config
   const model = AI_MODELS.FAST_WORKHORSE;
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
 
   try {
     const fetchWithRetry = async () => {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: query }] }],
-          tools: [{ google_search: {} }],
-        }),
-      });
-
-      if (response.status === 429 || response.status === 503) {
-        const errorData = await response.json().catch(() => ({}));
-        const message = errorData?.error?.message || "";
-        if (message.toLowerCase().includes("quota") || message.toLowerCase().includes("limit")) {
-          throw new Error(`QUOTA_EXCEEDED: ${message}`);
+      return await ai.models.generateContent({
+        model: model,
+        contents: query,
+        config: {
+          tools: [{ googleSearch: {} }]
         }
-        throw new Error(`RETRY_REQUIRED: ${response.status}`);
-      }
-
-      if (!response.ok) {
-        console.log(`[RAG Demo] Gemini web search failed: ${response.status} ${response.statusText}`);
-        return [];
-      }
-      return response.json();
+      });
     };
 
     // Apply the same retry logic as the rest of the app
