@@ -8,11 +8,19 @@ import path from "path";
 if (process.env.GOOGLE_CREDS_JSON) {
   try {
     const credsPath = path.join("/tmp", "gcp-creds.json");
-    fs.writeFileSync(credsPath, process.env.GOOGLE_CREDS_JSON);
+    // Validate it's proper JSON and clean up any potential wrapping quotes or newlines
+    const parsed = JSON.parse(process.env.GOOGLE_CREDS_JSON.trim());
+    fs.writeFileSync(credsPath, JSON.stringify(parsed, null, 2));
     process.env.GOOGLE_APPLICATION_CREDENTIALS = credsPath;
-    console.log("[GCP] Dynamically loaded credentials from GOOGLE_CREDS_JSON");
-  } catch (err) {
-    console.error("[GCP] Failed to write dynamic credentials:", err);
+    console.log("[GCP] Dynamically loaded and validated credentials from GOOGLE_CREDS_JSON");
+
+    // Automatically set GCP_PROJECT_ID from the service account JSON if not explicitly configured in env
+    if (parsed.project_id && !process.env.GCP_PROJECT_ID) {
+      process.env.GCP_PROJECT_ID = parsed.project_id;
+      console.log(`[GCP] Automatically configured GCP_PROJECT_ID from credentials: ${parsed.project_id}`);
+    }
+  } catch (err: any) {
+    console.error("[GCP] Failed to write dynamic credentials. Make sure GOOGLE_CREDS_JSON is valid JSON:", err.message);
   }
 }
 

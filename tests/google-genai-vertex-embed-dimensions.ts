@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 
-const project = process.env.GCP_PROJECT_ID || 'rag-demo-494302';
+const project = process.env.GCP_PROJECT_ID;
 const location = process.env.GCP_LOCATION || 'us-central1';
 
 async function testEmbedding(modelName: string, outputDim?: number) {

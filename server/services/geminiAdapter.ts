@@ -40,7 +40,7 @@ export class GeminiAdapter {
       console.log(`[Adapter] Initializing Vertex AI Adapter via unified SDK (Project: ${config.projectId || "DEFAULT"}, Location: ${config.location || "DEFAULT"})`);
       this.client = new GoogleGenAI({
         vertexai: true,
-        project: config.projectId || process.env.GCP_PROJECT_ID || "rag-demo-494302",
+        project: config.projectId || process.env.GCP_PROJECT_ID,
         location: config.location || process.env.GCP_LOCATION || "us-central1",
       });
 

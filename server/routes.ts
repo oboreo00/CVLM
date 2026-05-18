@@ -160,9 +160,9 @@ export async function registerRoutes(
       }
 
       res.json({ success: true, message: "Document ingested successfully" });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Ingest error:", error);
-      res.status(500).json({ message: "Failed to ingest document" });
+      res.status(500).json({ message: `Failed to ingest document: ${error.message || String(error)}` });
     }
   });
 
@@ -382,9 +382,9 @@ export async function registerRoutes(
       }).catch(console.error);
 
       return res.json(successBody);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Query error:", error);
-      res.status(500).json({ message: "Failed to process query" });
+      res.status(500).json({ message: `Failed to process query: ${error.message || String(error)}` });
     }
   });
 
