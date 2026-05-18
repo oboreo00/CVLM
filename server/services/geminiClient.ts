@@ -20,9 +20,8 @@ export async function getAnswer(ai: any, prompt: string, model: string = AI_MODE
     }),
   )) as any;
 
-  // The SDK class instance has a .text getter, but for the raw response 
-  // we access candidates[0]
-  const text = response.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  // Use the SDK's .text getter which automatically concatenates all text parts
+  const text = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "";
   
   return { 
     text, 
