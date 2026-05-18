@@ -203,12 +203,13 @@ ${text.substring(0, 1000)}`;
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,
       }),
-    )) as { text?: string };
+    )) as any; // Cast to any to access the SDK helper properties if needed
     
-    if (!response.text) return {};
+    const responseText = response.text;
+    if (!responseText) return {};
     
     // Clean up potential markdown formatting in response
-    const jsonStr = response.text.replace(/```json|```/g, '').trim();
+    const jsonStr = responseText.replace(/```json|```/g, '').trim();
     return JSON.parse(jsonStr);
   } catch (e) {
     console.error("[RAG] Metadata extraction failed:", e);

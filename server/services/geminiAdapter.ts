@@ -89,12 +89,12 @@ export class GeminiAdapter {
       } else if (clean.includes("pro")) {
         modelName = "gemini-2.5-pro";
       } else {
-        modelName = clean;
+        modelName = clean; // allow specific models to pass through
       }
       console.log(`[Adapter] Vertex AI generateContent using model: ${modelName} (original: ${options.model})`);
     } else {
       // Ensure model name has "models/" prefix if not already present (AI Studio requires it)
-      if (!modelName.startsWith("models/ ") && !modelName.startsWith("models/") && !modelName.startsWith("tunedModels/")) {
+      if (!modelName.startsWith("models/") && !modelName.startsWith("tunedModels/")) {
         modelName = `models/${modelName}`;
       }
     }
