@@ -2,10 +2,11 @@ import 'dotenv/config';
 import { GoogleGenAI } from '@google/genai';
 
 const project = process.env.GCP_PROJECT_ID;
-const location = process.env.GCP_LOCATION || 'us-central1';
+const location = process.env.GCP_LOCATION || 'us-east1';
 
 async function testEmbedding(modelName: string, outputDim?: number) {
   console.log(`Testing @google/genai vertexai:true for model: "${modelName}" with dim: ${outputDim}...`);
+  const start = Date.now();
   try {
     const ai = new GoogleGenAI({
       vertexai: true,
@@ -24,10 +25,12 @@ async function testEmbedding(modelName: string, outputDim?: number) {
       config
     });
     
-    console.log(`✅ Success for "${modelName}"! Dimension length:`, embedResponse.embeddings?.[0]?.values?.length);
+    const duration = Date.now() - start;
+    console.log(`✅ Success for "${modelName}"! (${duration}ms) Dimension length:`, embedResponse.embeddings?.[0]?.values?.length);
     return true;
   } catch (err: any) {
-    console.error(`❌ Failed for "${modelName}":`, err.message);
+    const duration = Date.now() - start;
+    console.error(`❌ Failed for "${modelName}" after ${duration}ms:`, err.message);
     return false;
   }
 }
