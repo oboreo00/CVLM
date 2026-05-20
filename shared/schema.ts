@@ -1,7 +1,8 @@
-import { pgTable, text, serial, jsonb, vector, integer, numeric, timestamp, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, jsonb, vector, integer, numeric, timestamp, uuid, pgPolicy } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { createHash } from "crypto";
+import { sql } from "drizzle-orm";
 
 /**
  * Hashes the content of a document using MD5.
@@ -22,7 +23,23 @@ export const documents = pgTable("documents", {
   metadata: jsonb("metadata"),
   embedding: vector("embedding", { dimensions: 3072 }),
   userId: uuid("user_id"),
-});
+}, (t) => [
+  pgPolicy("Users can view own or global documents", {
+    for: "select",
+    to: ["authenticated", "anon"],
+    using: sql`auth.uid() = user_id OR user_id IS NULL`,
+  }),
+  pgPolicy("Users can insert own documents", {
+    for: "insert",
+    to: ["authenticated", "anon"],
+    withCheck: sql`auth.uid() = user_id`,
+  }),
+  pgPolicy("Users can delete own documents", {
+    for: "delete",
+    to: ["authenticated", "anon"],
+    using: sql`auth.uid() = user_id`,
+  }),
+]);
 
 export const queryLogs = pgTable("query_logs", {
   id: serial("id").primaryKey(),
@@ -39,7 +56,18 @@ export const queryLogs = pgTable("query_logs", {
   createdAt: timestamp("created_at").defaultNow(),
   userId: uuid("user_id"),
   provider: text("provider"),
-});
+}, (t) => [
+  pgPolicy("Users can view own query logs", {
+    for: "select",
+    to: ["authenticated", "anon"],
+    using: sql`auth.uid() = user_id`,
+  }),
+  pgPolicy("Users can insert own query logs", {
+    for: "insert",
+    to: ["authenticated", "anon"],
+    withCheck: sql`auth.uid() = user_id`,
+  }),
+]);
 
 export const insertDocumentSchema = 
 createInsertSchema(documents)
