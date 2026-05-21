@@ -84,7 +84,9 @@ export class GeminiAdapter {
     if (this.useVertex) {
       // Map to standard Vertex AI production models (Gemini 2.5 is the production default in 2026)
       const clean = modelName.replace(/^models\//, "");
-      if (clean.includes("flash") || clean.includes("lite")) {
+      if (clean.includes("lite")) {
+        modelName = "gemini-2.5-flash-lite";
+      } else if (clean.includes("flash")) {
         modelName = "gemini-2.5-flash";
       } else if (clean.includes("pro")) {
         modelName = "gemini-2.5-pro";
