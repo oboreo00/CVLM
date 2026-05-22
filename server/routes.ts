@@ -9,7 +9,6 @@ import { withGeminiRetries, cosineSimilarity, getAnswer, isUncertainAnswer } fro
 import { searchWeb, type WebSearchItem } from "./services/webSearch";
 import {
   analyzeQuestionStructure,
-  getQuestionRelevanceScore,
   suggestQuestionBreakdown,
   generateSearchQuery,
   performUncertaintyFallback,
@@ -274,17 +273,16 @@ export async function registerRoutes(
         }
       }
 
-      const results = vectorStore.length > 0
-        ? vectorStore
-          .map((doc) => ({
-            ...doc,
-            similarity: cosineSimilarity(embedding, doc.embedding),
-          }))
-          .sort((a, b) => b.similarity - a.similarity)
-          .slice(0, 3)
-        : [];
+      let results: any[] = [];
+      let relevanceScore = 0;
 
-      const relevanceScore = getQuestionRelevanceScore(embedding, vectorStore);
+      if (vectorStore.length > 0) {
+        // Since there is only one resume document in the store for both session and core modes:
+        const doc = vectorStore[0];
+        const similarity = cosineSimilarity(embedding, doc.embedding);
+        results = [{ ...doc, similarity }];
+        relevanceScore = similarity;
+      }
       const isHybridSearch = questionStructure.isAdviceQuestion || questionStructure.isComplex;
 
       console.log("[RAG] Query State:", {
