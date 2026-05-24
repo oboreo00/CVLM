@@ -156,7 +156,8 @@ app.use("/api", async (req, res, next) => {
     {
       port,
       host: "0.0.0.0",
-      reusePort: true,
+      // SO_REUSEPORT is Linux-oriented; macOS returns ENOTSUP (common on Apple Silicon dev machines).
+      ...(process.platform === "linux" ? { reusePort: true } : {}),
     },
     () => {
       log(`serving on port ${port}`);
