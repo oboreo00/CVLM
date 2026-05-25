@@ -1,20 +1,15 @@
 import { performance } from "perf_hooks";
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import { api } from "@shared/routes";
-import { z } from "zod";
 import { GeminiAdapter } from "./services/geminiAdapter";
 import { storage } from "./storage";
-import { withGeminiRetries, cosineSimilarity, getAnswer, isUncertainAnswer } from "./services/geminiClient";
-import { searchWeb, type WebSearchItem } from "./services/webSearch";
+import { withGeminiRetries, getAnswer, isUncertainAnswer, cosineSimilarity } from "./services/geminiClient";
 import {
   analyzeQuestionStructure,
-  suggestQuestionBreakdown,
-  generateSearchQuery,
   performUncertaintyFallback,
   formatLocalContext,
-  formatWebContext,
-  extractDocumentMetadata
+  getQuestionRelevanceScore,
 } from "./services/queryAnalyzer";
 import { AI_MODELS, AI_CONFIG } from "./services/aiConfig";
 import {
@@ -23,22 +18,31 @@ import {
   removeFromVectorStoreBySession,
   syncDocsFromDiskAndReloadVectorStore,
 } from "./services/vectorStoreService";
-import { queryCache, hashQuestion, normalizeQuestion } from "./services/cacheService";
+import { queryCache } from "./services/cacheService";
+import {
+  createPendingSessionManifest,
+  filterSearchableVectorDocs,
+  newPrepId,
+  runSessionPrep,
+  type EmbedFn,
+} from "./services/prepBot";
+import { emitPrepUpdate, prepChannelKey, subscribePrepUpdates, writeSseEvent } from "./services/prepEvents";
+import { getManifestPayload, type PrepStatusPayload } from "./services/prepPayload";
 
-const WEB_FALLBACK_SIMILARITY = 0.55;
+const TOP_K_CHUNKS = 5;
+/** Below this blended top-K relevance score, skip local synthesis and fall back to web search. */
+const WEB_FALLBACK_SIMILARITY = 0.1;
 
-
-
-/**
- * Generates an embedding vector for a given prompt.
- * Uses the 2026 standard text-embedding-004 model.
- */
-async function getEmbedding(ai: any, prompt: string): Promise<number[]> {
+async function getEmbedding(
+  ai: GeminiAdapter,
+  prompt: string,
+  taskType: "RETRIEVAL_QUERY" | "RETRIEVAL_DOCUMENT" = "RETRIEVAL_QUERY",
+): Promise<number[]> {
   const response = (await withGeminiRetries("embedContent", () =>
     ai.models.embedContent({
       model: AI_MODELS.EMBEDDING,
       contents: [prompt],
-      config: { taskType: "RETRIEVAL_QUERY" },
+      config: { taskType },
     }),
   )) as { embeddings?: { values: number[] }[] };
   if (response.embeddings && response.embeddings.length > 0) {
@@ -47,11 +51,22 @@ async function getEmbedding(ai: any, prompt: string): Promise<number[]> {
   return [];
 }
 
-
+function rankChunksBySimilarity(
+  embedding: number[],
+  vectorStore: ReturnType<typeof getVectorStore>,
+) {
+  return vectorStore
+    .map((doc) => ({
+      ...doc,
+      similarity: doc.embedding.length ? cosineSimilarity(embedding, doc.embedding) : 0,
+    }))
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, TOP_K_CHUNKS);
+}
 
 export async function registerRoutes(
   httpServer: Server,
-  app: Express
+  app: Express,
 ): Promise<Server> {
   const ai = new GeminiAdapter({
     useVertex: process.env.USE_VERTEX_AI === "true",
@@ -60,53 +75,119 @@ export async function registerRoutes(
     location: process.env.GCP_LOCATION,
   });
 
-  //const model = ai.getGenerativeModel({        model: AI_MODELS.FAST_WORKHORSE, });
-  // const embeddingModel = genAI.getGenerativeModel({ model: "text-embedding-004" });
-  //await listModels();
+  const embedFn: EmbedFn = (text, taskType) => getEmbedding(ai, text, taskType ?? "RETRIEVAL_DOCUMENT");
 
-  async function listModels() {
-    const pager = await ai.models.list();
-
-    // The Pager object stores the actual array in .models 
-    // or .result.models depending on the specific response wrap.
-    for await (const m of pager) {
-      console.log({
-        name: m.name,
-        actions: m.supportedActions,
-      });
-    }
-  }
-
-  // Don't block HTTP + Vite startup on embeddings (Gemini outages can hang for minutes).
-  void syncDocsFromDiskAndReloadVectorStore(
-    (prompt) => getEmbedding(ai, prompt)
-  ).catch((e) =>
+  void syncDocsFromDiskAndReloadVectorStore(ai, embedFn).catch((e) =>
     console.error("[RAG Demo] Background doc sync failed:", e),
   );
 
-  // Ideally we store embeddings in DB. For this minimal demo, we'll
-  // just start fresh or lazy-load if we added persistence for embeddings.
-  // To keep it fast and minimal, we'll start with empty vector store
-  // and only use what's added in this session or implement simple re-indexing.
-
-  // For the purpose of this "minimal demo", we won't re-embed everything on restart 
-  // to avoid API costs/latency loop, but we will store text in DB.
-
-  // Initialize cache and load from disk
   queryCache.loadFromDisk();
-
-  // Periodically persist cache to disk (every 5 mins)
   setInterval(() => queryCache.saveToDisk(), 5 * 60 * 1000);
+
+  // Session-scoped routes treat req.body.userId as proof of authentication.
+  // server/index.ts runs before all /api handlers: it validates Authorization: Bearer <JWT>
+  // via Supabase auth.getUser() and, on success, sets req.body.userId to the Supabase user id.
+  // No userId means no valid token was sent (or verification failed) — not an anonymous session id.
 
   app.get(api.rag.sessionStatus.path, async (req, res) => {
     try {
-      const { sessionId } = req.params;
-      const vectorStore = getVectorStore();
-      const hasDocument = vectorStore.some(doc => doc.metadata?.sessionId === sessionId);
-      res.json({ hasDocument });
+      const userId = req.body.userId as string | undefined;
+      if (!userId) {
+        return res.json({ hasDocument: false, prepStatus: "none" });
+      }
+
+      const manifest = await storage.getManifest(userId);
+      const payload = getManifestPayload(manifest);
+      res.json({
+        hasDocument: !!manifest,
+        prepStatus: payload.prepStatus,
+      });
     } catch (error) {
       console.error("Session status error:", error);
       res.status(500).json({ message: "Failed to check session status" });
+    }
+  });
+
+  app.get(api.rag.prepStatus.path, async (req, res) => {
+    try {
+      const queryMode = req.query.queryMode === "session" ? "session" : "core";
+      const userId = req.body.userId as string | undefined;
+
+      if (queryMode === "session") {
+        // Custom resume is per-user; without middleware-injected userId the client is not authed.
+        if (!userId) return res.json({ prepStatus: "none" });
+        const manifest = await storage.getManifest(userId);
+        return res.json(getManifestPayload(manifest));
+      }
+
+      const manifest = await storage.getCoreManifest();
+      return res.json(getManifestPayload(manifest));
+    } catch (error) {
+      console.error("Prep status error:", error);
+      res.status(500).json({ message: "Failed to check prep status" });
+    }
+  });
+
+  app.get(api.rag.prepStream.path, async (req, res) => {
+    const queryMode = req.query.queryMode === "session" ? "session" : "core";
+    const userId = req.body.userId as string | undefined;
+
+    // Core prep is global (knowledge/ folder); session stream is private and requires JWT → userId.
+    if (queryMode === "session" && !userId) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const channelKey = queryMode === "core" ? prepChannelKey("core") : prepChannelKey("session", userId);
+    let closed = false;
+    let unsubscribe: (() => void) | null = null;
+
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe?.();
+      res.end();
+    };
+
+    const push = (payload: PrepStatusPayload) => {
+      if (closed) return;
+      writeSseEvent(res, payload);
+      if (payload.prepStatus === "ready" || payload.prepStatus === "failed") {
+        closeStream();
+      }
+    };
+
+    const heartbeat = setInterval(() => {
+      if (!closed) res.write(": ping\n\n");
+    }, 25000);
+
+    req.on("close", closeStream);
+
+    try {
+      const manifest =
+        queryMode === "core"
+          ? await storage.getCoreManifest()
+          : // userId defined: session branch returned 401 above when missing
+            await storage.getManifest(userId!);
+      const initial = getManifestPayload(manifest);
+      push(initial);
+
+      if (initial.prepStatus === "pending" && !closed) {
+        unsubscribe = subscribePrepUpdates(channelKey, push);
+      } else if (!closed) {
+        closeStream();
+      }
+    } catch (error) {
+      console.error("Prep stream error:", error);
+      if (!closed) {
+        writeSseEvent(res, { prepStatus: "failed", prepError: "Stream error" });
+        closeStream();
+      }
     }
   });
 
@@ -114,51 +195,40 @@ export async function registerRoutes(
     try {
       const { text, userId } = api.rag.ingest.input.parse(req.body);
 
-      // 1. Generate Embedding
-      const embedding = await getEmbedding(ai, text);
-      console.log("EMBEDDING result:", embedding);
-
-      // 2. Extract Identity Metadata
-      const identityMetadata = await extractDocumentMetadata(ai, text);
-      console.log("[RAG] Extracted identity:", identityMetadata);
-
-      // 3. Clear previous session data if this is a session-based upload
-      // This prevents "cumulative knowledge" where old resumes hang around
-      if (userId) {
-        console.log(`[RAG] Updating resume for user ${userId}: clearing old documents`);
-        await storage.deleteUserDocuments(userId);
-        removeFromVectorStoreBySession(userId); // still use same func but pass userId
+      // Ingest always targets the caller's session manifest; userId only exists after JWT middleware.
+      if (!userId) {
+        return res.status(400).json({
+          message: "Authentication required. Core resume is loaded from the knowledge folder at startup.",
+        });
       }
 
-      // 4. Store in DB (for persistence)
-      let metadata: any = { ...identityMetadata };
-      if (userId) {
-        metadata = {
-          ...metadata,
-          userId,
-          expiresAt: Date.now() + 24 * 60 * 60 * 1000,
-        };
-      }
-      const doc = await storage.createDocument({ content: text, metadata, embedding, userId });
+      const prepId = newPrepId();
+      console.log(`[RAG] Session upload for user ${userId}, prepId=${prepId}`);
 
-      // 3. Update in-memory vector store
+      await storage.deleteUserDocuments(userId);
+      removeFromVectorStoreBySession(userId);
+
+      const manifest = await createPendingSessionManifest(userId, prepId);
       addToVectorStore({
-        id: doc.id,
-        content: doc.content,
-        embedding: embedding,
-        metadata,
+        id: manifest.id,
+        content: manifest.content,
+        embedding: [],
+        metadata: manifest.metadata as Record<string, unknown>,
       });
 
-      // 4. Invalidate response caches since new knowledge was added
-      // This prevents serving stale answers that should now be updated
-      if (!userId) {
-        queryCache.invalidateOnDocumentIngest(doc.id);
-      } else {
-        // For session-based uploads, specifically clear the previous analysis of that session
-        queryCache.invalidateSessionCache(userId);
-      }
+      queryCache.invalidateSessionCache(userId);
 
-      res.json({ success: true, message: "Document ingested successfully" });
+      emitPrepUpdate("session", userId, { prepStatus: "pending" });
+
+      void runSessionPrep(ai, userId, text, prepId, embedFn).catch((e) =>
+        console.error("[PrepBot] Unhandled session prep error:", e),
+      );
+
+      res.json({
+        success: true,
+        message: "Resume received. Analysis running in the background.",
+        prepId,
+      });
     } catch (error: any) {
       console.error("Ingest error:", error);
       res.status(500).json({ message: `Failed to ingest document: ${error.message || String(error)}` });
@@ -171,83 +241,78 @@ export async function registerRoutes(
 
     try {
       const { question, userId, queryMode } = api.rag.query.input.parse(req.body);
+      const mode = queryMode || "core";
 
-      // 0. Check response cache first (only for core queries unless in demo mode)
-      const cachedResponse = (queryMode !== 'session' || AI_CONFIG.DEMO_MODE)
-        ? queryCache.getResponse(question, queryMode, userId)
-        : null;
+      const cachedResponse =
+        mode !== "session" || AI_CONFIG.DEMO_MODE
+          ? queryCache.getResponse(question, mode, userId)
+          : null;
       if (cachedResponse) {
-        console.log(`[Cache] Full response cache hit (${queryMode} mode)`);
+        console.log(`[Cache] Full response cache hit (${mode} mode)`);
         void storage.insertQueryLog({
           question,
-          queryMode: queryMode || 'core',
+          queryMode: mode,
           userId,
           totalDurationMs: Math.round(performance.now() - totalStart),
           relevanceScore: cachedResponse.relevanceScore || 0,
-          modelsUsed: {
-            synthesis: "cache",
-            analysis: "cache",
-            embedding: "cache"
-          },
+          modelsUsed: { synthesis: "cache", analysis: "cache", embedding: "cache" },
           stepDurations: { total: Math.round(performance.now() - totalStart) },
-          cacheStatus: {
-            embeddingHit: true,
-            webSearchHit: false, // Don't claim a web hit if we just hit the response cache
-            responseHit: true
-          },
+          cacheStatus: { embeddingHit: true, webSearchHit: false, responseHit: true },
           promptTokens: 0,
           completionTokens: 0,
           totalTokens: 0,
-          provider: "cache"
-        }).catch(e => console.error("[Telemetry] Failed to log cached query:", e));
+          provider: "cache",
+        }).catch((e) => console.error(e));
 
         return res.json({ ...cachedResponse, _cacheHit: true });
       }
 
-      // Analyze question structure upfront
       const analysisStart = performance.now();
       const questionStructure = analyzeQuestionStructure(question);
       stepDurations.analysis = Math.round(performance.now() - analysisStart);
 
-      console.log("[RAG] Question analysis", {
-        questionPreview: question.slice(0, 80),
-        ...questionStructure,
-      });
+      const vectorStore = filterSearchableVectorDocs(getVectorStore(), mode, userId);
 
-      // 1. Try local RAG first (if we have local vectors)
-      let embedding: number[] = [];
-      let vectorStore = getVectorStore();
+      if (mode === "session" && userId) {
+        const manifest = await storage.getManifest(userId);
+        const prepStatus = (manifest?.metadata as Record<string, unknown> | null)?.prepStatus;
 
-      if (queryMode === 'session' && userId) {
-        vectorStore = vectorStore.filter(doc => doc.metadata?.userId === userId);
-      } else {
-        vectorStore = vectorStore.filter(doc => !doc.metadata?.userId);
+        if (!manifest) {
+          return res.json({
+            answer:
+              "You haven't uploaded your resume for this session yet. Please paste your resume in the Custom Resume section above.",
+            sources: [],
+          });
+        }
+
+        if (prepStatus === "pending") {
+          return res.json({
+            answer:
+              "Your resume is still being analyzed. Please wait a moment and try again — starter questions will appear when indexing finishes.",
+            sources: [],
+          });
+        }
+
+        if (prepStatus === "failed") {
+          return res.json({
+            answer:
+              "Resume analysis failed. Please try uploading your resume again.",
+            sources: [],
+          });
+        }
       }
 
-      if (queryMode === 'session' && vectorStore.length === 0) {
-        // Log this early exit so we can track system friction
-        void storage.insertQueryLog({
-          question,
-          queryMode,
-          userId,
-          totalDurationMs: Math.round(performance.now() - totalStart),
-          relevanceScore: 0,
-          modelsUsed: { synthesis: "none", analysis: "none", embedding: "none" },
-          stepDurations: { total: Math.round(performance.now() - totalStart) },
-          cacheStatus: { embeddingHit: false, webSearchHit: false, responseHit: false },
-          promptTokens: 0,
-          completionTokens: 0,
-          totalTokens: 0,
-          provider: "none"
-        }).catch(e => console.error("[Telemetry] Failed to log empty session query:", e));
-
+      if (mode === "session" && vectorStore.length === 0) {
         return res.json({
-          answer: "You haven't uploaded your resume for this session yet. Please paste your resume text in the 'Ingest document' section above and click 'Ingest' so I can analyze it for you.",
+          answer:
+            "Your resume is still being indexed. Please wait a moment and try again.",
           sources: [],
         });
       }
 
+      let embedding: number[] = [];
       let embeddingCacheHit = false;
+
       if (vectorStore.length > 0) {
         const embedStart = performance.now();
         try {
@@ -262,13 +327,17 @@ export async function registerRoutes(
           stepDurations.embedding = Math.round(performance.now() - embedStart);
         } catch (embedErr) {
           console.error("[RAG] Query embedding failed, falling back to web search", embedErr);
-          const fallbackResponse = await performUncertaintyFallback(ai, question, [], 0, questionStructure, false, queryMode, userId);
-          void storage.insertQueryLog({
+          const fallbackResponse = await performUncertaintyFallback(
+            ai,
             question,
-            queryMode: queryMode || 'core',
+            [],
+            0,
+            questionStructure,
+            false,
+            mode,
             userId,
-            ...fallbackResponse.telemetry
-          }).catch(console.error);
+          );
+          void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
           return res.json(fallbackResponse);
         }
       }
@@ -276,73 +345,68 @@ export async function registerRoutes(
       let results: any[] = [];
       let relevanceScore = 0;
 
-      if (vectorStore.length > 0) {
-        // Since there is only one resume document in the store for both session and core modes:
-        const doc = vectorStore[0];
-        const similarity = cosineSimilarity(embedding, doc.embedding);
-        results = [{ ...doc, similarity }];
-        relevanceScore = similarity;
+      if (vectorStore.length > 0 && embedding.length > 0) {
+        relevanceScore = getQuestionRelevanceScore(embedding, vectorStore, TOP_K_CHUNKS);
+        results = rankChunksBySimilarity(embedding, vectorStore);
       }
+
       const isHybridSearch = questionStructure.isAdviceQuestion || questionStructure.isComplex;
+      const preferLocalRag =
+        questionStructure.isSimpleFactualLookup && results.length > 0;
 
-      console.log("[RAG] Query State:", {
-        queryMode,
-        userId: userId,
-        vectorStoreSize: vectorStore.length,
-        resultsCount: results.length,
-        relevanceScore: relevanceScore.toFixed(4),
-        isHybridSearch,
-        isAdvice: questionStructure.isAdviceQuestion,
-        isComplex: questionStructure.isComplex
-      });
-
-      // QUOTA SAVER: If relevance is extremely low, skip the local AI call.
-      if (relevanceScore < 0.1 && !isHybridSearch) {
-        console.log("[RAG] Quota Saver: Skipping local AI call (relevance too low)", { relevanceScore });
-        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, userId);
-        void storage.insertQueryLog({
+      if (relevanceScore < WEB_FALLBACK_SIMILARITY && !isHybridSearch && !preferLocalRag) {
+        const fallbackResponse = await performUncertaintyFallback(
+          ai,
           question,
-          queryMode: queryMode || 'core',
+          results,
+          relevanceScore,
+          questionStructure,
+          embeddingCacheHit,
+          mode,
           userId,
-          ...fallbackResponse.telemetry
-        }).catch(console.error);
-
+        );
+        void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
         return res.json(fallbackResponse);
       }
 
-      // Hybrid or Low Confidence Path
-      // We only fallback to web search immediately if no relevant documents were found.
-      // Otherwise, we always attempt a grounded RAG answer first. 
-      // If that answer is uncertain, the system will naturally fall back to web search later.
-      const shouldFallbackImmediately = results.length === 0;
-
-      if (shouldFallbackImmediately) {
-        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, userId);
-        void storage.insertQueryLog({
+      if (results.length === 0) {
+        const fallbackResponse = await performUncertaintyFallback(
+          ai,
           question,
-          queryMode: queryMode || 'core',
+          results,
+          relevanceScore,
+          questionStructure,
+          embeddingCacheHit,
+          mode,
           userId,
-          ...fallbackResponse.telemetry
-        }).catch(console.error);
+        );
+        void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
         return res.json(fallbackResponse);
       }
 
-      // Standard RAG Path
       const synthesisStart = performance.now();
       const context = formatLocalContext(results);
-      const sources = results.map((r) => r.content.substring(0, 50) + "...");
+      const sources = results.map((r) => {
+        const section = r.metadata?.section ? `[${r.metadata.section}] ` : "";
+        const company = r.metadata?.company ? `${r.metadata.company}: ` : "";
+        return section + company + r.content.substring(0, 80) + "...";
+      });
       const prompt = `You are a helpful assistant. Answer based ONLY on the following context. If unknown, say you don't know.\n\nContext:\n${context}\n\nQuestion: ${question}`;
       const { text: answer, usage: synthesisUsage } = await getAnswer(ai, prompt);
       stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
 
       if (isUncertainAnswer(answer)) {
-        const fallbackResponse = await performUncertaintyFallback(ai, question, results, relevanceScore, questionStructure, embeddingCacheHit, queryMode, userId);
-        void storage.insertQueryLog({
+        const fallbackResponse = await performUncertaintyFallback(
+          ai,
           question,
-          queryMode: queryMode || 'core',
+          results,
+          relevanceScore,
+          questionStructure,
+          embeddingCacheHit,
+          mode,
           userId,
-          ...fallbackResponse.telemetry
-        }).catch(console.error);
+        );
+        void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
         return res.json(fallbackResponse);
       }
 
@@ -360,25 +424,19 @@ export async function registerRoutes(
           modelsUsed: {
             synthesis: AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
             analysis: "local-rag",
-            embedding: AI_MODELS.EMBEDDING
+            embedding: AI_MODELS.EMBEDDING,
           },
           cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: false, responseHit: false },
           promptTokens: synthesisUsage?.promptTokenCount || 0,
           completionTokens: synthesisUsage?.candidatesTokenCount || 0,
-          totalTokens: synthesisUsage?.totalTokenCount || 0
-        }
+          totalTokens: synthesisUsage?.totalTokenCount || 0,
+        },
       };
 
-      queryCache.setResponse(question, successBody, queryMode, userId);
+      queryCache.setResponse(question, successBody, mode, userId);
       if (AI_CONFIG.DEMO_MODE) queryCache.saveToDisk();
 
-      void storage.insertQueryLog({
-        question,
-        queryMode: queryMode || 'core',
-        userId,
-        ...successBody.telemetry
-      }).catch(console.error);
-
+      void storage.insertQueryLog({ question, queryMode: mode, userId, ...successBody.telemetry }).catch(console.error);
       return res.json(successBody);
     } catch (error: any) {
       console.error("Query error:", error);

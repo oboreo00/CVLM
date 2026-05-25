@@ -1,5 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import {
+  prepDisplayForModeSwitch,
+  prepDisplayFromPayload,
+} from "@/lib/prepDisplayState";
+import {
+  clearQueryOptionsForModeChange,
+  clearQueryOptionsForNewQuery,
+  type ClearQueryOptions,
+} from "@/lib/queryUiState";
+import { consumePrepStatusStream, type PrepStatusPayload } from "@/lib/prepStatusStream";
 import {
   Tooltip,
   TooltipContent,
@@ -8,6 +18,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import About from "@/components/About";
+import { AnswerMarkdown } from "@/components/AnswerMarkdown";
 import "./home.css";
 
 export default function Home() {
@@ -26,29 +37,88 @@ export default function Home() {
   const [showIngestField, setShowIngestField] = useState(false);
   const [answerExpanded, setAnswerExpanded] = useState(false);
   const [showReadmeModal, setShowReadmeModal] = useState(false);
+  const [prepStatus, setPrepStatus] = useState<"none" | "pending" | "ready" | "failed">("none");
+  const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
+  const [chunkIndex, setChunkIndex] = useState<{ count: number; sections: string[] } | null>(null);
+  const [prepStreamNonce, setPrepStreamNonce] = useState(0);
 
   const { toast } = useToast();
 
+  const applyPrepPayload = useCallback((data: PrepStatusPayload | null) => {
+    const next = prepDisplayFromPayload(data);
+    if (!next) return;
+    setPrepStatus(next.prepStatus);
+    setChunkIndex(next.chunkIndex);
+    setStarterQuestions(next.starterQuestions);
+  }, []);
+
+  const clearQueryResults = useCallback((options?: ClearQueryOptions) => {
+    if (options?.clearQuestion) {
+      setQuestion("");
+    }
+    setAnswer(null);
+    setSources([]);
+    setSuggestedQuestions([]);
+    setHint(null);
+    setAnswerExpanded(false);
+    if (options?.clearHighlight) {
+      setIsHighlighting(false);
+    }
+    if (options?.clearError) {
+      setError(null);
+    }
+  }, []);
+
+  const handleQueryModeChange = useCallback(
+    (mode: "core" | "session") => {
+      const clearOpts = clearQueryOptionsForModeChange(queryMode, mode);
+      if (!clearOpts) return;
+      clearQueryResults(clearOpts);
+      const prepReset = prepDisplayForModeSwitch();
+      setPrepStatus(prepReset.prepStatus);
+      setChunkIndex(prepReset.chunkIndex);
+      setStarterQuestions(prepReset.starterQuestions);
+      setQueryMode(mode);
+    },
+    [queryMode, clearQueryResults],
+  );
+
   useEffect(() => {
-    // Check if session already has a resume
-    const checkStatus = async () => {
+    const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
-      
+
       try {
         const res = await fetch(`/api/rag/session-status`, {
-          headers: {
-            "Authorization": `Bearer ${session.access_token}`
-          }
+          headers: { Authorization: `Bearer ${session.access_token}` },
         });
         const data = await res.json();
-        if (data.hasDocument) setHasResume(true);
+        if (data.hasDocument) {
+          setHasResume(true);
+        }
       } catch (err) {
         console.error("Failed to check session status", err);
       }
     };
-    checkStatus();
+    void checkSession();
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    const runStream = async () => {
+      try {
+        await consumePrepStatusStream(queryMode, applyPrepPayload, controller.signal);
+      } catch (err) {
+        if ((err as Error).name !== "AbortError") {
+          console.error("Prep status stream error", err);
+        }
+      }
+    };
+
+    void runStream();
+    return () => controller.abort();
+  }, [queryMode, prepStreamNonce, applyPrepPayload]);
 
   async function handleIngest() {
     if (!ingestText.trim()) return;
@@ -70,13 +140,22 @@ export default function Home() {
       }
       setIngestText("");
       setHasResume(true);
+      clearQueryResults({
+        clearQuestion: true,
+        clearHighlight: true,
+        clearError: true,
+      });
+      setQueryMode("session");
+      setPrepStatus("pending");
+      setStarterQuestions([]);
+      setChunkIndex(null);
+      setPrepStreamNonce((n) => n + 1);
 
       toast({
-        title: "Success",
-        description: "Your resume has been processed and indexed.",
+        title: "Resume received",
+        description: "Analyzing and indexing your resume in the background.",
       });
     } catch (e: any) {
-      setError(e.message ?? "Failed to ingest document");
       const message = e.message ?? "Failed to ingest document";
       setError(message);
       toast({
@@ -89,15 +168,12 @@ export default function Home() {
     }
   }
 
-  async function handleQuery(overrideQuestion?: any) {
+  async function handleQuery(overrideQuestion?: string) {
     const q = (typeof overrideQuestion === "string") ? overrideQuestion : question;
     if (!q || typeof q !== "string" || !q.trim()) return;
     setLoadingQuery(true);
     setError(null);
-    setAnswer(null); // Clear old answer for instant feedback
-    setAnswerExpanded(false);
-    setSuggestedQuestions([]);
-    setHint(null);
+    clearQueryResults(clearQueryOptionsForNewQuery());
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -194,7 +270,7 @@ export default function Home() {
                 onClick={handleIngest}
                 disabled={loadingIngest || !ingestText.trim()}
               >
-                {loadingIngest ? "Saving" : hasResume ? "Update Resume" : "Upload Resume"}
+                {loadingIngest ? "Uploading" : hasResume ? "Update Resume" : "Upload Resume"}
               </button>
             </div>
           </div>
@@ -211,7 +287,7 @@ export default function Home() {
                     name="queryMode" 
                     value="core" 
                     checked={queryMode === 'core'} 
-                    onChange={() => setQueryMode('core')}
+                    onChange={() => handleQueryModeChange("core")}
                   />
                   <span>Author's Resume</span>
                 </label>
@@ -221,13 +297,30 @@ export default function Home() {
                     name="queryMode" 
                     value="session" 
                     checked={queryMode === 'session'} 
-                    onChange={() => setQueryMode('session')}
+                    onChange={() => handleQueryModeChange("session")}
                   />
                   <span>Custom Resume</span>
                 </label>
               </div>
             </div>
-            <p className="rag-hint">Ask a question about the resume</p>
+            <p className="rag-hint">
+              {queryMode === "session" && prepStatus === "pending"
+                ? "Analyzing your resume — you can ask questions once indexing finishes."
+                : "Ask a question about the resume"}
+            </p>
+            {prepStatus === "pending" && (
+              <p className="rag-chunk-status" aria-live="polite">
+                Indexing resume sections…
+              </p>
+            )}
+            {chunkIndex && prepStatus === "ready" && (
+              <p className="rag-chunk-status rag-chunk-status--ready" aria-live="polite">
+                {chunkIndex.count} segment{chunkIndex.count === 1 ? "" : "s"} indexed
+                {chunkIndex.sections.length > 0 && (
+                  <> · {chunkIndex.sections.join(" · ")}</>
+                )}
+              </p>
+            )}
             <input
               className={`rag-input${isHighlighting ? " animate-query-pop" : ""}`}
               value={question}
@@ -238,7 +331,7 @@ export default function Home() {
             <br />
             <button
               className={`rag-btn${loadingQuery ? " rag-btn-loading" : ""}`}
-              onClick={handleQuery}
+              onClick={() => void handleQuery()}
               disabled={loadingQuery || !question.trim()}
             >
               {loadingQuery ? "Thinking" : "Ask"}
@@ -255,7 +348,7 @@ export default function Home() {
               <div className="rag-answer-block">
                 <div className="rag-label">Answer</div>
                 <div className={`rag-answer-wrapper${!answerExpanded ? " capped" : ""}`}>
-                  <div className="rag-answer-text">{answer}</div>
+                  <AnswerMarkdown content={answer} />
                 </div>
                 <button
                   className="rag-answer-toggle"
@@ -294,6 +387,25 @@ export default function Home() {
               </div>
             </>
           )}
+
+          {starterQuestions.length > 0 && prepStatus === "ready" && (
+            <div className="rag-suggestions" style={{ marginTop: answer ? "1.5rem" : "1rem" }}>
+              <p className="rag-suggestions-label">Suggested questions:</p>
+              <div>
+                {starterQuestions.map((sq, i) => (
+                  <button
+                    key={i}
+                    className="rag-suggestion-btn"
+                    onClick={() => handleSuggestedQuestion(sq)}
+                    type="button"
+                  >
+                    {sq}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <p className="rag-footer-note">Query text and usage metadata (model, token, cache status) are logged for performance monitoring</p>
         </div>
         <About open={showReadmeModal} onOpenChange={setShowReadmeModal} />

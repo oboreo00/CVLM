@@ -69,14 +69,15 @@ export const queryLogs = pgTable("query_logs", {
   }),
 ]);
 
-export const insertDocumentSchema = 
-createInsertSchema(documents)
-  .omit({ id: true })
-  .extend({
-    content: z.string().min(1),
-    metadata: z.record(z.string(), z.any()).optional(),
-    embedding: z.array(z.number().finite()).length(3072),
-  });
+export const insertDocumentSchema =
+  createInsertSchema(documents)
+    .omit({ id: true })
+    .extend({
+      content: z.string().min(1),
+      metadata: z.record(z.string(), z.any()).optional(),
+      embedding: z.array(z.number().finite()).length(3072).optional().nullable(),
+      userId: z.string().uuid().optional().nullable(),
+    });
 
 export type Document = typeof documents.$inferSelect;
 export type InsertDocument = z.infer<typeof insertDocumentSchema>;
