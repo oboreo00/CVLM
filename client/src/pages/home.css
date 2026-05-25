@@ -251,7 +251,7 @@
   position: relative;
 }
 
-.rag-answer-wrapper.capped .rag-answer-text {
+.rag-answer-wrapper.capped .rag-answer-markdown {
   max-height: 400px;
   overflow: hidden;
 }
@@ -289,16 +289,108 @@
   border-color: rgba(122, 179, 138, 0.4);
 }
 
-.rag-answer-text {
+.rag-answer-markdown {
   font-size: 0.8rem;
   color: #cae9cf;
   line-height: 1.85;
-  white-space: pre-wrap;
   font-weight: 300;
   padding: 1rem;
   background: rgba(10, 15, 11, 0.6);
   border-left: 2px solid rgba(122, 179, 138, 0.3);
   font-family: 'Outfit', sans-serif;
+}
+
+.rag-answer-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.rag-answer-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.rag-answer-markdown p {
+  margin: 0 0 0.75rem;
+}
+
+.rag-answer-markdown strong {
+  color: #e2f5e6;
+  font-weight: 500;
+}
+
+.rag-answer-markdown em {
+  color: #b8dcc0;
+}
+
+.rag-answer-markdown h1,
+.rag-answer-markdown h2,
+.rag-answer-markdown h3 {
+  color: #86c598;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  margin: 1rem 0 0.5rem;
+}
+
+.rag-answer-markdown h1 { font-size: 1rem; }
+.rag-answer-markdown h2 { font-size: 0.9rem; }
+.rag-answer-markdown h3 { font-size: 0.85rem; }
+
+.rag-answer-markdown ul,
+.rag-answer-markdown ol {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.rag-answer-markdown li {
+  margin-bottom: 0.35rem;
+}
+
+.rag-answer-markdown li::marker {
+  color: #63a975;
+}
+
+.rag-answer-markdown a {
+  color: #86c598;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.rag-answer-markdown a:hover {
+  color: #a8dcc0;
+}
+
+.rag-answer-markdown code {
+  font-family: ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: #a8dcc0;
+  background: rgba(122, 179, 138, 0.12);
+  padding: 0.1em 0.35em;
+  border-radius: 2px;
+}
+
+.rag-answer-markdown pre {
+  margin: 0 0 0.75rem;
+  padding: 0.75rem;
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 2px;
+}
+
+.rag-answer-markdown pre code {
+  padding: 0;
+  background: none;
+}
+
+.rag-answer-markdown blockquote {
+  margin: 0 0 0.75rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid rgba(122, 179, 138, 0.35);
+  color: #9fc9a8;
+}
+
+.rag-answer-markdown hr {
+  border: none;
+  border-top: 1px solid rgba(122, 179, 138, 0.2);
+  margin: 1rem 0;
 }
 
 .rag-sources-label {

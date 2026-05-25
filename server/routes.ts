@@ -26,7 +26,8 @@ import {
   runSessionPrep,
   type EmbedFn,
 } from "./services/prepBot";
-import type { ChunkIndexInfo, PrepStatus, ResumeBrief, ResumeProfile } from "@shared/resumeTypes";
+import { emitPrepUpdate, prepChannelKey, subscribePrepUpdates, writeSseEvent } from "./services/prepEvents";
+import { getManifestPayload, type PrepStatusPayload } from "./services/prepPayload";
 
 const TOP_K_CHUNKS = 5;
 /** Below this blended top-K relevance score, skip local synthesis and fall back to web search. */
@@ -48,28 +49,6 @@ async function getEmbedding(
     return response.embeddings[0].values;
   }
   return [];
-}
-
-function getManifestPayload(manifest: { metadata: unknown } | null) {
-  if (!manifest?.metadata || typeof manifest.metadata !== "object") {
-    return { prepStatus: "none" as PrepStatus };
-  }
-  const meta = manifest.metadata as Record<string, unknown>;
-  const chunkIndexRaw = meta.chunkIndex;
-  const chunkIndex =
-    chunkIndexRaw &&
-    typeof chunkIndexRaw === "object" &&
-    typeof (chunkIndexRaw as ChunkIndexInfo).count === "number"
-      ? (chunkIndexRaw as ChunkIndexInfo)
-      : undefined;
-
-  return {
-    prepStatus: (meta.prepStatus as PrepStatus) ?? "none",
-    profile: meta.profile as ResumeProfile | undefined,
-    brief: meta.brief as ResumeBrief | undefined,
-    chunkIndex,
-    prepError: typeof meta.prepError === "string" ? meta.prepError : undefined,
-  };
 }
 
 function rankChunksBySimilarity(
@@ -105,6 +84,11 @@ export async function registerRoutes(
   queryCache.loadFromDisk();
   setInterval(() => queryCache.saveToDisk(), 5 * 60 * 1000);
 
+  // Session-scoped routes treat req.body.userId as proof of authentication.
+  // server/index.ts runs before all /api handlers: it validates Authorization: Bearer <JWT>
+  // via Supabase auth.getUser() and, on success, sets req.body.userId to the Supabase user id.
+  // No userId means no valid token was sent (or verification failed) — not an anonymous session id.
+
   app.get(api.rag.sessionStatus.path, async (req, res) => {
     try {
       const userId = req.body.userId as string | undefined;
@@ -130,6 +114,7 @@ export async function registerRoutes(
       const userId = req.body.userId as string | undefined;
 
       if (queryMode === "session") {
+        // Custom resume is per-user; without middleware-injected userId the client is not authed.
         if (!userId) return res.json({ prepStatus: "none" });
         const manifest = await storage.getManifest(userId);
         return res.json(getManifestPayload(manifest));
@@ -143,10 +128,74 @@ export async function registerRoutes(
     }
   });
 
+  app.get(api.rag.prepStream.path, async (req, res) => {
+    const queryMode = req.query.queryMode === "session" ? "session" : "core";
+    const userId = req.body.userId as string | undefined;
+
+    // Core prep is global (knowledge/ folder); session stream is private and requires JWT → userId.
+    if (queryMode === "session" && !userId) {
+      return res.status(401).json({ message: "Authentication required" });
+    }
+
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.flushHeaders();
+
+    const channelKey = queryMode === "core" ? prepChannelKey("core") : prepChannelKey("session", userId);
+    let closed = false;
+    let unsubscribe: (() => void) | null = null;
+
+    const closeStream = () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(heartbeat);
+      unsubscribe?.();
+      res.end();
+    };
+
+    const push = (payload: PrepStatusPayload) => {
+      if (closed) return;
+      writeSseEvent(res, payload);
+      if (payload.prepStatus === "ready" || payload.prepStatus === "failed") {
+        closeStream();
+      }
+    };
+
+    const heartbeat = setInterval(() => {
+      if (!closed) res.write(": ping\n\n");
+    }, 25000);
+
+    req.on("close", closeStream);
+
+    try {
+      const manifest =
+        queryMode === "core"
+          ? await storage.getCoreManifest()
+          : // userId defined: session branch returned 401 above when missing
+            await storage.getManifest(userId!);
+      const initial = getManifestPayload(manifest);
+      push(initial);
+
+      if (initial.prepStatus === "pending" && !closed) {
+        unsubscribe = subscribePrepUpdates(channelKey, push);
+      } else if (!closed) {
+        closeStream();
+      }
+    } catch (error) {
+      console.error("Prep stream error:", error);
+      if (!closed) {
+        writeSseEvent(res, { prepStatus: "failed", prepError: "Stream error" });
+        closeStream();
+      }
+    }
+  });
+
   app.post(api.rag.ingest.path, async (req, res) => {
     try {
       const { text, userId } = api.rag.ingest.input.parse(req.body);
 
+      // Ingest always targets the caller's session manifest; userId only exists after JWT middleware.
       if (!userId) {
         return res.status(400).json({
           message: "Authentication required. Core resume is loaded from the knowledge folder at startup.",
@@ -168,6 +217,8 @@ export async function registerRoutes(
       });
 
       queryCache.invalidateSessionCache(userId);
+
+      emitPrepUpdate("session", userId, { prepStatus: "pending" });
 
       void runSessionPrep(ai, userId, text, prepId, embedFn).catch((e) =>
         console.error("[PrepBot] Unhandled session prep error:", e),
@@ -300,8 +351,10 @@ export async function registerRoutes(
       }
 
       const isHybridSearch = questionStructure.isAdviceQuestion || questionStructure.isComplex;
+      const preferLocalRag =
+        questionStructure.isSimpleFactualLookup && results.length > 0;
 
-      if (relevanceScore < WEB_FALLBACK_SIMILARITY && !isHybridSearch) {
+      if (relevanceScore < WEB_FALLBACK_SIMILARITY && !isHybridSearch && !preferLocalRag) {
         const fallbackResponse = await performUncertaintyFallback(
           ai,
           question,

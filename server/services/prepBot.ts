@@ -22,6 +22,8 @@ import {
   removeFromVectorStoreBySession,
   type VectorDoc,
 } from "./vectorStoreService";
+import { emitPrepUpdate } from "./prepEvents.ts";
+import { getManifestPayload } from "./prepPayload.ts";
 
 const MANIFEST_PLACEHOLDER = "[manifest]";
 
@@ -175,6 +177,7 @@ export async function runCorePrepForSource(
   });
 
   applyDocumentsToVectorStore(docs);
+  emitPrepUpdate("core", undefined, getManifestPayload(docs.manifest));
   console.log(`[PrepBot] Core prep ready for ${source} (${docs.chunks.length} chunks)`);
 }
 
@@ -213,10 +216,13 @@ export async function runSessionPrep(
     });
 
     applyDocumentsToVectorStore(docs);
+    emitPrepUpdate("session", userId, getManifestPayload(docs.manifest));
     console.log(`[PrepBot] Session prep ready for ${userId} (${docs.chunks.length} chunks)`);
   } catch (e) {
     console.error(`[PrepBot] Session prep failed for ${userId}:`, e);
     await storage.updateManifestPrepStatus(userId, "failed", prepId, String(e));
+    const manifest = await storage.getManifest(userId);
+    emitPrepUpdate("session", userId, getManifestPayload(manifest));
   }
 }
 

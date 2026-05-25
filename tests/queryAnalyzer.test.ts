@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { getQuestionRelevanceScore } from "../server/services/queryAnalyzer.ts";
+import {
+  analyzeQuestionStructure,
+  getQuestionRelevanceScore,
+} from "../server/services/queryAnalyzer.ts";
 
 describe("queryAnalyzer", () => {
+  describe("analyzeQuestionStructure", () => {
+    it("treats last-job factual questions as simple, not complex or advice", () => {
+      const s = analyzeQuestionStructure("What did I do in my last job?");
+      expect(s.isComplex).toBe(false);
+      expect(s.isAdviceQuestion).toBe(false);
+      expect(s.isSimpleFactualLookup).toBe(true);
+      expect(s.estimatedSubQuestions).toBe(1);
+    });
+  });
+
   describe("getQuestionRelevanceScore", () => {
     const questionEmbedding = [1, 0, 0];
 

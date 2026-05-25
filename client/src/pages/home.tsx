@@ -1,5 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import {
+  prepDisplayForModeSwitch,
+  prepDisplayFromPayload,
+} from "@/lib/prepDisplayState";
+import { clearQueryOptionsForModeChange } from "@/lib/queryUiState";
+import { consumePrepStatusStream, type PrepStatusPayload } from "@/lib/prepStatusStream";
 import {
   Tooltip,
   TooltipContent,
@@ -8,6 +14,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import About from "@/components/About";
+import { AnswerMarkdown } from "@/components/AnswerMarkdown";
 import "./home.css";
 
 export default function Home() {
@@ -27,111 +34,82 @@ export default function Home() {
   const [answerExpanded, setAnswerExpanded] = useState(false);
   const [showReadmeModal, setShowReadmeModal] = useState(false);
   const [prepStatus, setPrepStatus] = useState<"none" | "pending" | "ready" | "failed">("none");
-  const [briefSummary, setBriefSummary] = useState<string | null>(null);
   const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
   const [chunkIndex, setChunkIndex] = useState<{ count: number; sections: string[] } | null>(null);
-  const prepPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [prepStreamNonce, setPrepStreamNonce] = useState(0);
 
   const { toast } = useToast();
 
-  const fetchPrepStatus = useCallback(async (mode: "core" | "session") => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const headers: Record<string, string> = {};
-    if (session) headers["Authorization"] = `Bearer ${session.access_token}`;
-
-    const res = await fetch(`/api/rag/prep-status?queryMode=${mode}`, { headers });
-    if (!res.ok) return null;
-    return res.json();
+  const applyPrepPayload = useCallback((data: PrepStatusPayload | null) => {
+    const next = prepDisplayFromPayload(data);
+    if (!next) return;
+    setPrepStatus(next.prepStatus);
+    setChunkIndex(next.chunkIndex);
+    setStarterQuestions(next.starterQuestions);
   }, []);
 
-  const applyPrepPayload = useCallback((data: {
-    prepStatus?: string;
-    brief?: { summary?: string; starterQuestions?: string[] };
-    chunkIndex?: { count: number; sections: string[] };
-  } | null) => {
-    if (!data) return;
-    const status = data.prepStatus ?? "none";
-    if (status === "pending" || status === "ready" || status === "failed" || status === "none") {
-      setPrepStatus(status);
+  const clearQueryResults = useCallback((options?: { clearQuestion?: boolean }) => {
+    if (options?.clearQuestion) {
+      setQuestion("");
     }
-    if (status === "pending") setChunkIndex(null);
-    if (data.chunkIndex?.count != null) setChunkIndex(data.chunkIndex);
-    if (data.brief?.summary) setBriefSummary(data.brief.summary);
-    if (data.brief?.starterQuestions?.length) {
-      setStarterQuestions(data.brief.starterQuestions);
-    }
+    setAnswer(null);
+    setSources([]);
+    setSuggestedQuestions([]);
+    setHint(null);
+    setAnswerExpanded(false);
+    setIsHighlighting(false);
   }, []);
 
-  const startPrepPolling = useCallback((mode: "core" | "session") => {
-    if (prepPollRef.current) clearInterval(prepPollRef.current);
-
-    const poll = async () => {
-      try {
-        const data = await fetchPrepStatus(mode);
-        applyPrepPayload(data);
-        if (data?.prepStatus === "ready" || data?.prepStatus === "failed") {
-          if (prepPollRef.current) clearInterval(prepPollRef.current);
-          prepPollRef.current = null;
-        }
-      } catch (err) {
-        console.error("Failed to poll prep status", err);
-      }
-    };
-
-    void poll();
-    prepPollRef.current = setInterval(poll, 2000);
-  }, [applyPrepPayload, fetchPrepStatus]);
+  const handleQueryModeChange = useCallback(
+    (mode: "core" | "session") => {
+      const clearOpts = clearQueryOptionsForModeChange(queryMode, mode);
+      if (!clearOpts) return;
+      clearQueryResults(clearOpts);
+      const prepReset = prepDisplayForModeSwitch();
+      setPrepStatus(prepReset.prepStatus);
+      setChunkIndex(prepReset.chunkIndex);
+      setStarterQuestions(prepReset.starterQuestions);
+      setQueryMode(mode);
+    },
+    [queryMode, clearQueryResults],
+  );
 
   useEffect(() => {
-    return () => {
-      if (prepPollRef.current) clearInterval(prepPollRef.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    const checkStatus = async () => {
+    const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
 
       try {
         const res = await fetch(`/api/rag/session-status`, {
-          headers: {
-            Authorization: `Bearer ${session.access_token}`,
-          },
+          headers: { Authorization: `Bearer ${session.access_token}` },
         });
         const data = await res.json();
         if (data.hasDocument) {
           setHasResume(true);
-          if (data.prepStatus) setPrepStatus(data.prepStatus);
-          if (data.prepStatus === "pending") startPrepPolling("session");
-        }
-
-        const corePrep = await fetchPrepStatus("core");
-        applyPrepPayload(corePrep);
-        if (corePrep?.prepStatus !== "ready" && corePrep?.prepStatus !== "failed") {
-          startPrepPolling("core");
         }
       } catch (err) {
         console.error("Failed to check session status", err);
       }
     };
-    checkStatus();
-  }, [applyPrepPayload, fetchPrepStatus, startPrepPolling]);
+    void checkSession();
+  }, []);
 
   useEffect(() => {
-    const loadModePrep = async () => {
+    const controller = new AbortController();
+
+    const runStream = async () => {
       try {
-        const data = await fetchPrepStatus(queryMode);
-        applyPrepPayload(data);
-        if (data?.prepStatus === "pending" || data?.prepStatus === "none") {
-          startPrepPolling(queryMode);
-        }
+        await consumePrepStatusStream(queryMode, applyPrepPayload, controller.signal);
       } catch (err) {
-        console.error("Failed to load prep status", err);
+        if ((err as Error).name !== "AbortError") {
+          console.error("Prep status stream error", err);
+        }
       }
     };
-    void loadModePrep();
-  }, [queryMode, applyPrepPayload, fetchPrepStatus, startPrepPolling]);
+
+    void runStream();
+    return () => controller.abort();
+  }, [queryMode, prepStreamNonce, applyPrepPayload]);
 
   async function handleIngest() {
     if (!ingestText.trim()) return;
@@ -153,18 +131,18 @@ export default function Home() {
       }
       setIngestText("");
       setHasResume(true);
+      clearQueryResults({ clearQuestion: true });
+      setQueryMode("session");
       setPrepStatus("pending");
       setStarterQuestions([]);
-      setBriefSummary(null);
       setChunkIndex(null);
-      startPrepPolling("session");
+      setPrepStreamNonce((n) => n + 1);
 
       toast({
         title: "Resume received",
         description: "Analyzing and indexing your resume in the background.",
       });
     } catch (e: any) {
-      setError(e.message ?? "Failed to ingest document");
       const message = e.message ?? "Failed to ingest document";
       setError(message);
       toast({
@@ -177,15 +155,12 @@ export default function Home() {
     }
   }
 
-  async function handleQuery(overrideQuestion?: any) {
+  async function handleQuery(overrideQuestion?: string) {
     const q = (typeof overrideQuestion === "string") ? overrideQuestion : question;
     if (!q || typeof q !== "string" || !q.trim()) return;
     setLoadingQuery(true);
     setError(null);
-    setAnswer(null); // Clear old answer for instant feedback
-    setAnswerExpanded(false);
-    setSuggestedQuestions([]);
-    setHint(null);
+    clearQueryResults();
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -299,7 +274,7 @@ export default function Home() {
                     name="queryMode" 
                     value="core" 
                     checked={queryMode === 'core'} 
-                    onChange={() => setQueryMode('core')}
+                    onChange={() => handleQueryModeChange("core")}
                   />
                   <span>Author's Resume</span>
                 </label>
@@ -309,7 +284,7 @@ export default function Home() {
                     name="queryMode" 
                     value="session" 
                     checked={queryMode === 'session'} 
-                    onChange={() => setQueryMode('session')}
+                    onChange={() => handleQueryModeChange("session")}
                   />
                   <span>Custom Resume</span>
                 </label>
@@ -322,20 +297,15 @@ export default function Home() {
             </p>
             {prepStatus === "pending" && (
               <p className="rag-chunk-status" aria-live="polite">
-                prepBot · segmenting resume → embedding vector index…
+                Indexing resume sections…
               </p>
             )}
             {chunkIndex && prepStatus === "ready" && (
               <p className="rag-chunk-status rag-chunk-status--ready" aria-live="polite">
-                prepBot · {chunkIndex.count} segment{chunkIndex.count === 1 ? "" : "s"} indexed
+                {chunkIndex.count} segment{chunkIndex.count === 1 ? "" : "s"} indexed
                 {chunkIndex.sections.length > 0 && (
                   <> · {chunkIndex.sections.join(" · ")}</>
                 )}
-              </p>
-            )}
-            {briefSummary && prepStatus === "ready" && (
-              <p className="rag-hint" style={{ fontStyle: "italic", marginTop: "0.25rem" }}>
-                {briefSummary}
               </p>
             )}
             <input
@@ -348,30 +318,12 @@ export default function Home() {
             <br />
             <button
               className={`rag-btn${loadingQuery ? " rag-btn-loading" : ""}`}
-              onClick={handleQuery}
+              onClick={() => void handleQuery()}
               disabled={loadingQuery || !question.trim()}
             >
               {loadingQuery ? "Thinking" : "Ask"}
             </button>
           </div>
-
-          {starterQuestions.length > 0 && prepStatus === "ready" && !answer && (
-            <div className="rag-suggestions" style={{ marginTop: "1rem" }}>
-              <p className="rag-suggestions-label">Suggested questions:</p>
-              <div>
-                {starterQuestions.map((sq, i) => (
-                  <button
-                    key={i}
-                    className="rag-suggestion-btn"
-                    onClick={() => handleSuggestedQuestion(sq)}
-                    type="button"
-                  >
-                    {sq}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
           {error && (
             <div className="rag-error">⚠ {error}</div>
@@ -383,7 +335,7 @@ export default function Home() {
               <div className="rag-answer-block">
                 <div className="rag-label">Answer</div>
                 <div className={`rag-answer-wrapper${!answerExpanded ? " capped" : ""}`}>
-                  <div className="rag-answer-text">{answer}</div>
+                  <AnswerMarkdown content={answer} />
                 </div>
                 <button
                   className="rag-answer-toggle"
@@ -422,6 +374,25 @@ export default function Home() {
               </div>
             </>
           )}
+
+          {starterQuestions.length > 0 && prepStatus === "ready" && (
+            <div className="rag-suggestions" style={{ marginTop: answer ? "1.5rem" : "1rem" }}>
+              <p className="rag-suggestions-label">Suggested questions:</p>
+              <div>
+                {starterQuestions.map((sq, i) => (
+                  <button
+                    key={i}
+                    className="rag-suggestion-btn"
+                    onClick={() => handleSuggestedQuestion(sq)}
+                    type="button"
+                  >
+                    {sq}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <p className="rag-footer-note">Query text and usage metadata (model, token, cache status) are logged for performance monitoring</p>
         </div>
         <About open={showReadmeModal} onOpenChange={setShowReadmeModal} />

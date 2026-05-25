@@ -57,6 +57,10 @@ export const api = {
         500: z.object({ message: z.string() }),
       },
     },
+    prepStream: {
+      method: "GET" as const,
+      path: `${RAG_BASE}/prep/stream`,
+    },
     prepStatus: {
       method: "GET" as const,
       path: `${RAG_BASE}/prep-status`,

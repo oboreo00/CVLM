@@ -19,6 +19,8 @@ interface QuestionStructure {
   isComplex: boolean;
   isAdviceQuestion: boolean;
   isPersonal: boolean;
+  /** Short, factual resume lookups (last job, what did I do, etc.) — not advice, not multi-part. */
+  isSimpleFactualLookup: boolean;
   estimatedSubQuestions: number;
   keywords: string[];
 }
@@ -71,24 +73,30 @@ export function analyzeQuestionStructure(question: string): QuestionStructure {
   const containsAdviceVerb = /should|could|would|best|better|right|choose|recommend|suggest|guidanc|advic|opinion|think|believe|path/i.test(question);
   
   // Direct factual queries about the person's own background should NOT be treated as advice questions
-  const isDirectPersonalQuery = /skill|experience|background|history|role|title|education|project|achieve|done|did|got|have/i.test(question) && 
-                                /i |me|my|got|have|who am i/i.test(question);
-  
+  const isDirectPersonalQuery =
+    /skill|experience|background|history|role|title|education|project|achieve|done|did|got|have/i.test(
+      question,
+    ) && /i |me|my|got|have|who am i/i.test(question);
+
   const adviceQuestionFinal = isAdviceQuestion && containsAdviceVerb && !isDirectPersonalQuery;
 
-  console.log("[Analyzer] Debug Advice:", {
-    question,
-    isAdviceQuestion,
-    containsAdviceVerb,
-    isDirectPersonalQuery,
-    adviceQuestionFinal
-  });
+  // Simple resume lookups — should use RAG directly, not "complex question" breakdown or web rewrite hints
+  const isSimpleFactualLookup =
+    isDirectPersonalQuery &&
+    /what did i|what have i|what was i|last (job|role|position|company)|recent (job|role)|my (last|recent|current|previous)|responsibilit|duties|achieve|accomplish|projects? at|work(ed)? at|role at/i.test(
+      question.toLowerCase(),
+    );
+
+  const needsBreakdown = isComplex || adviceQuestionFinal;
 
   return {
     isComplex,
     isAdviceQuestion: adviceQuestionFinal,
     isPersonal,
-    estimatedSubQuestions: Math.max(2, conjunctionCount + questionMarkCount + (adviceQuestionFinal ? 1 : 0)),
+    isSimpleFactualLookup,
+    estimatedSubQuestions: needsBreakdown
+      ? Math.max(2, conjunctionCount + questionMarkCount + (adviceQuestionFinal ? 1 : 0))
+      : 1,
     keywords: words.filter(w => w.length > 4).slice(0, 5),
   };
 }
@@ -292,7 +300,11 @@ export async function performUncertaintyFallback(
 
   // 1. Determine if we need fresh suggestions
   let suggestions: string[] = [];
-  if (structure.isPersonal || (structure.isComplex && relevanceScore < 0.5)) {
+  const suggestAlternatives =
+    !structure.isSimpleFactualLookup &&
+    (structure.isAdviceQuestion || (structure.isComplex && relevanceScore < 0.5));
+
+  if (suggestAlternatives) {
     const start = performance.now();
     const breakdownResult = await suggestQuestionBreakdown(ai, question, structure);
     suggestions = breakdownResult.questions;
@@ -369,7 +381,11 @@ export async function performUncertaintyFallback(
       uncertainty: true,
       isAdviceQuestion: structure.isAdviceQuestion,
       suggestedQuestions: suggestions.length > 0 ? suggestions : undefined,
-      hint: suggestions.length > 0 ? "Your question appears complex. Try these simpler questions instead:" : undefined,
+      hint: suggestions.length > 0
+        ? structure.isAdviceQuestion
+          ? "This looks like a career-guidance question. Try these focused angles:"
+          : "Try these simpler questions instead:"
+        : undefined,
       _cache: { embeddingHit: embeddingCacheHit, webSearchHit: webCacheHit },
       telemetry: {
         totalDurationMs: Math.round(performance.now() - totalStart),
@@ -416,7 +432,11 @@ export async function performUncertaintyFallback(
     sources: [],
     uncertainty: true,
     suggestedQuestions: suggestions.length > 0 ? suggestions : undefined,
-    hint: suggestions.length > 0 ? "Your question appears complex. Try asking these simpler questions instead:" : undefined,
+    hint: suggestions.length > 0
+      ? structure.isAdviceQuestion
+        ? "This looks like a career-guidance question. Try these focused angles:"
+        : "Try these simpler questions instead:"
+      : undefined,
     telemetry: finalTelemetry
   };
   
