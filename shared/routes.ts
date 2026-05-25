@@ -48,9 +48,37 @@ export const api = {
     },
     sessionStatus: {
       method: "GET" as const,
-      path: `${RAG_BASE}/session-status/:sessionId`,
+      path: `${RAG_BASE}/session-status`,
       responses: {
-        200: z.object({ hasDocument: z.boolean() }),
+        200: z.object({
+          hasDocument: z.boolean(),
+          prepStatus: z.enum(["none", "pending", "ready", "failed"]).optional(),
+        }),
+        500: z.object({ message: z.string() }),
+      },
+    },
+    prepStatus: {
+      method: "GET" as const,
+      path: `${RAG_BASE}/prep-status`,
+      responses: {
+        200: z.object({
+          prepStatus: z.enum(["none", "pending", "ready", "failed"]),
+          profile: z.record(z.string(), z.any()).optional(),
+          brief: z
+            .object({
+              summary: z.string(),
+              proofPoints: z.array(z.string()),
+              starterQuestions: z.array(z.string()),
+            })
+            .optional(),
+          prepError: z.string().optional(),
+          chunkIndex: z
+            .object({
+              count: z.number(),
+              sections: z.array(z.string()),
+            })
+            .optional(),
+        }),
         500: z.object({ message: z.string() }),
       },
     },

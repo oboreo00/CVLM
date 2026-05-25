@@ -7,7 +7,10 @@ import path from "path";
 import fs from "fs";
 import type { Document } from "@shared/schema";
 import { hashContent } from "@shared/schema";
+import { DOC_TYPES } from "@shared/resumeTypes";
+import { isCorePrepReady } from "@shared/documentFilters";
 import { storage } from "../storage";
+import { runCorePrepForSource, type EmbedFn } from "./prepBot";
 
 export interface VectorDoc {
   id: number;
@@ -16,15 +19,14 @@ export interface VectorDoc {
   metadata?: Record<string, any> | null;
 }
 
-// In-memory vector store
 let vectorStore: VectorDoc[] = [];
-
-export function getVectorStore(): VectorDoc[] {
-  return vectorStore;
-}
 
 export function setVectorStore(docs: VectorDoc[]): void {
   vectorStore = docs;
+}
+
+export function getVectorStore(): VectorDoc[] {
+  return vectorStore;
 }
 
 export function addToVectorStore(doc: VectorDoc): void {
@@ -32,7 +34,24 @@ export function addToVectorStore(doc: VectorDoc): void {
 }
 
 export function removeFromVectorStoreBySession(userId: string): void {
-  vectorStore = vectorStore.filter(doc => doc.metadata?.userId !== userId);
+  vectorStore = vectorStore.filter((doc) => doc.metadata?.userId !== userId);
+}
+
+export function removeFromVectorStoreBySource(source: string): void {
+  vectorStore = vectorStore.filter((doc) => doc.metadata?.source !== source);
+}
+
+export async function reloadVectorStoreFromDb(): Promise<void> {
+  const updatedDocs = await storage.getDocuments();
+  vectorStore = updatedDocs
+    .filter((doc): doc is Document & { embedding: number[] | null } => true)
+    .map((doc) => ({
+      id: doc.id,
+      content: doc.content,
+      embedding: (doc.embedding as number[] | null) ?? [],
+      metadata: doc.metadata as Record<string, unknown> | null,
+    }));
+  console.log("[CVLM] vectorStore reloaded:", vectorStore.length, "documents");
 }
 
 export async function cleanupExpiredSessions(): Promise<void> {
@@ -40,14 +59,14 @@ export async function cleanupExpiredSessions(): Promise<void> {
     await storage.deleteExpiredSessions();
     const now = Date.now();
     const initialLength = vectorStore.length;
-    
-    vectorStore = vectorStore.filter(doc => {
+
+    vectorStore = vectorStore.filter((doc) => {
       if (doc.metadata && doc.metadata.expiresAt) {
         return doc.metadata.expiresAt >= now;
       }
-      return true; // Keep core documents without expiresAt
+      return true;
     });
-    
+
     if (vectorStore.length !== initialLength) {
       console.log(`[CVLM] Cleaned up ${initialLength - vectorStore.length} expired session vectors.`);
     }
@@ -57,62 +76,38 @@ export async function cleanupExpiredSessions(): Promise<void> {
 }
 
 /**
- * Syncs documents from disk and reloads the vector store
- * Called on server startup to index knowledge/ directory
+ * Syncs resume files from knowledge/ and reloads the vector store.
+ * Runs prep bot when content hash changes (manifest + chunks in DB).
  */
 export async function syncDocsFromDiskAndReloadVectorStore(
-  getEmbedding: (prompt: string) => Promise<number[]>
+  ai: unknown,
+  getEmbedding: EmbedFn,
 ): Promise<void> {
   const docsDir = path.join(process.cwd(), "knowledge");
   let files: string[];
   try {
-    files = fs.readdirSync(docsDir).filter(f => !f.endsWith(".json"));
+    files = fs.readdirSync(docsDir).filter((f) => !f.endsWith(".json"));
   } catch (e) {
     console.error(`[RAG Demo] Could not read docs dir: ${docsDir}`, e);
     return;
   }
+
   const existingDocs = await storage.getDocuments();
+
   for (const file of files) {
     const content = fs.readFileSync(path.join(docsDir, file), "utf-8");
     const hash = hashContent(content);
 
-    const existing = existingDocs.find((doc) => {
-      const metadata = (doc.metadata ?? null) as Record<string, unknown> | null;
-      return metadata?.source === file;
-    });
-
-    if (existing) {
-      const metadata = (existing.metadata ?? null) as Record<string, unknown> | null;
-      if (metadata?.hash === hash && existing.embedding) {
-        console.log(`[RAG Demo] ${file} unchanged, skipping`);
-        continue;
-      }
-      console.log(`[RAG Demo] ${file} needs ${existing.embedding ? 'update' : 'initial embedding'}, processing`);
-      const embedding = await getEmbedding(content);
-      await storage.updateDocument(existing.id, {
-        content,
-        embedding,
-        metadata: { source: file, hash },
-      });
-    } else {
-      console.log(`[RAG Demo] ${file} new, ingesting`);
-      const embedding = await getEmbedding(content);
-      await storage.addDocuments([
-        { content, embedding, metadata: { source: file, hash } },
-      ]);
+    if (isCorePrepReady(existingDocs, file, hash, DOC_TYPES.CORE_MANIFEST)) {
+      console.log(`[RAG Demo] ${file} unchanged and prepped, skipping`);
+      continue;
     }
+
+    console.log(`[RAG Demo] ${file} needs prep (new or updated)`);
+    removeFromVectorStoreBySource(file);
+    await runCorePrepForSource(ai, file, content, hash, getEmbedding);
   }
 
-  const updatedDocs = await storage.getDocuments();
-  console.log(`[RAG Demo] Loading ${updatedDocs.length} documents...`);
-  vectorStore = updatedDocs
-    .filter((doc): doc is Document & { embedding: number[] } => doc.embedding !== null)
-    .map((doc) => ({
-      ...doc,
-      embedding: doc.embedding!,
-      metadata: doc.metadata as Record<string, any> | null,
-    }));
-
-  console.log("[RAG Demo] vectorStore size:", vectorStore.length);
+  await reloadVectorStoreFromDb();
   await cleanupExpiredSessions();
 }

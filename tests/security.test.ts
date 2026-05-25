@@ -19,7 +19,7 @@ async function runSecurityTests() {
   console.log('🚀 Starting Security & RLS Validation Tests...\n');
 
   let testsPassed = 0;
-  let totalTests = 2;
+  let totalTests = 4;
 
   // TEST 1: Unauthenticated Bot Access
   try {
@@ -80,6 +80,85 @@ async function runSecurityTests() {
     }
   } catch (err) {
     console.error('  ❌ Test 2 crashed:', err);
+  }
+
+  console.log('');
+
+  // TEST 3: Document isolation — users cannot read other users' session documents
+  try {
+    console.log('Test 3: Session Document Isolation');
+    const clientA = createClient(supabaseUrl, supabaseAnonKey);
+    const { data: authA, error: authErrA } = await clientA.auth.signInAnonymously();
+
+    if (authErrA || !authA.user) {
+      console.error('  ❌ Auth Error:', authErrA?.message);
+    } else {
+      const marker = `security-doc-${Date.now()}`;
+      const { error: insErr } = await clientA.from('documents').insert({
+        content: '[manifest]',
+        user_id: authA.user.id,
+        metadata: {
+          type: 'session_manifest',
+          prepStatus: 'ready',
+          marker,
+        },
+      });
+
+      if (insErr) {
+        console.error('  ❌ Insert Error:', insErr.message);
+      } else {
+        const clientB = createClient(supabaseUrl, supabaseAnonKey);
+        const { error: authErrB } = await clientB.auth.signInAnonymously();
+        if (authErrB) {
+          console.error('  ❌ User B auth error:', authErrB.message);
+        } else {
+          const { data: leaked, error: selErr } = await clientB
+            .from('documents')
+            .select('id')
+            .contains('metadata', { marker });
+
+          if (selErr) {
+            console.log('  ✅ SUCCESS: Cross-user document read blocked.');
+            testsPassed++;
+          } else if (!leaked || leaked.length === 0) {
+            console.log('  ✅ SUCCESS: User B cannot see User A documents.');
+            testsPassed++;
+          } else {
+            console.error('  ❌ FAILURE: User B read User A session document!');
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('  ❌ Test 3 crashed:', err);
+  }
+
+  console.log('');
+
+  // TEST 4: Authenticated users can read core (global) documents
+  try {
+    console.log('Test 4: Core Document Read Access');
+    const client = createClient(supabaseUrl, supabaseAnonKey);
+    const { error: authErr } = await client.auth.signInAnonymously();
+
+    if (authErr) {
+      console.error('  ❌ Auth Error:', authErr.message);
+    } else {
+      const { data, error } = await client
+        .from('documents')
+        .select('id')
+        .is('user_id', null)
+        .limit(1);
+
+      if (error) {
+        console.error('  ❌ Selection Error:', error.message);
+      } else {
+        console.log(`  ✅ SUCCESS: Authenticated user can query core documents (${data?.length ?? 0} rows visible).`);
+        testsPassed++;
+      }
+    }
+  } catch (err) {
+    console.error('  ❌ Test 4 crashed:', err);
   }
 
   console.log('\n--- Test Summary ---');

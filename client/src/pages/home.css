@@ -96,6 +96,20 @@
   font-weight: 300;
 }
 
+.rag-chunk-status {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  color: #3a5c42;
+  letter-spacing: 0.04em;
+  margin: -0.35rem 0 0.75rem;
+  line-height: 1.5;
+  opacity: 0.92;
+}
+
+.rag-chunk-status--ready {
+  color: #4a7356;
+}
+
 .rag-textarea {
   width: 100%;
   min-height: 120px;

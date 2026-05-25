@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   Tooltip,
@@ -26,29 +26,112 @@ export default function Home() {
   const [showIngestField, setShowIngestField] = useState(false);
   const [answerExpanded, setAnswerExpanded] = useState(false);
   const [showReadmeModal, setShowReadmeModal] = useState(false);
+  const [prepStatus, setPrepStatus] = useState<"none" | "pending" | "ready" | "failed">("none");
+  const [briefSummary, setBriefSummary] = useState<string | null>(null);
+  const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
+  const [chunkIndex, setChunkIndex] = useState<{ count: number; sections: string[] } | null>(null);
+  const prepPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const { toast } = useToast();
 
+  const fetchPrepStatus = useCallback(async (mode: "core" | "session") => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers: Record<string, string> = {};
+    if (session) headers["Authorization"] = `Bearer ${session.access_token}`;
+
+    const res = await fetch(`/api/rag/prep-status?queryMode=${mode}`, { headers });
+    if (!res.ok) return null;
+    return res.json();
+  }, []);
+
+  const applyPrepPayload = useCallback((data: {
+    prepStatus?: string;
+    brief?: { summary?: string; starterQuestions?: string[] };
+    chunkIndex?: { count: number; sections: string[] };
+  } | null) => {
+    if (!data) return;
+    const status = data.prepStatus ?? "none";
+    if (status === "pending" || status === "ready" || status === "failed" || status === "none") {
+      setPrepStatus(status);
+    }
+    if (status === "pending") setChunkIndex(null);
+    if (data.chunkIndex?.count != null) setChunkIndex(data.chunkIndex);
+    if (data.brief?.summary) setBriefSummary(data.brief.summary);
+    if (data.brief?.starterQuestions?.length) {
+      setStarterQuestions(data.brief.starterQuestions);
+    }
+  }, []);
+
+  const startPrepPolling = useCallback((mode: "core" | "session") => {
+    if (prepPollRef.current) clearInterval(prepPollRef.current);
+
+    const poll = async () => {
+      try {
+        const data = await fetchPrepStatus(mode);
+        applyPrepPayload(data);
+        if (data?.prepStatus === "ready" || data?.prepStatus === "failed") {
+          if (prepPollRef.current) clearInterval(prepPollRef.current);
+          prepPollRef.current = null;
+        }
+      } catch (err) {
+        console.error("Failed to poll prep status", err);
+      }
+    };
+
+    void poll();
+    prepPollRef.current = setInterval(poll, 2000);
+  }, [applyPrepPayload, fetchPrepStatus]);
+
   useEffect(() => {
-    // Check if session already has a resume
+    return () => {
+      if (prepPollRef.current) clearInterval(prepPollRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
     const checkStatus = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) return;
-      
+
       try {
         const res = await fetch(`/api/rag/session-status`, {
           headers: {
-            "Authorization": `Bearer ${session.access_token}`
-          }
+            Authorization: `Bearer ${session.access_token}`,
+          },
         });
         const data = await res.json();
-        if (data.hasDocument) setHasResume(true);
+        if (data.hasDocument) {
+          setHasResume(true);
+          if (data.prepStatus) setPrepStatus(data.prepStatus);
+          if (data.prepStatus === "pending") startPrepPolling("session");
+        }
+
+        const corePrep = await fetchPrepStatus("core");
+        applyPrepPayload(corePrep);
+        if (corePrep?.prepStatus !== "ready" && corePrep?.prepStatus !== "failed") {
+          startPrepPolling("core");
+        }
       } catch (err) {
         console.error("Failed to check session status", err);
       }
     };
     checkStatus();
-  }, []);
+  }, [applyPrepPayload, fetchPrepStatus, startPrepPolling]);
+
+  useEffect(() => {
+    const loadModePrep = async () => {
+      try {
+        const data = await fetchPrepStatus(queryMode);
+        applyPrepPayload(data);
+        if (data?.prepStatus === "pending" || data?.prepStatus === "none") {
+          startPrepPolling(queryMode);
+        }
+      } catch (err) {
+        console.error("Failed to load prep status", err);
+      }
+    };
+    void loadModePrep();
+  }, [queryMode, applyPrepPayload, fetchPrepStatus, startPrepPolling]);
 
   async function handleIngest() {
     if (!ingestText.trim()) return;
@@ -70,10 +153,15 @@ export default function Home() {
       }
       setIngestText("");
       setHasResume(true);
+      setPrepStatus("pending");
+      setStarterQuestions([]);
+      setBriefSummary(null);
+      setChunkIndex(null);
+      startPrepPolling("session");
 
       toast({
-        title: "Success",
-        description: "Your resume has been processed and indexed.",
+        title: "Resume received",
+        description: "Analyzing and indexing your resume in the background.",
       });
     } catch (e: any) {
       setError(e.message ?? "Failed to ingest document");
@@ -194,7 +282,7 @@ export default function Home() {
                 onClick={handleIngest}
                 disabled={loadingIngest || !ingestText.trim()}
               >
-                {loadingIngest ? "Saving" : hasResume ? "Update Resume" : "Upload Resume"}
+                {loadingIngest ? "Uploading" : hasResume ? "Update Resume" : "Upload Resume"}
               </button>
             </div>
           </div>
@@ -227,7 +315,29 @@ export default function Home() {
                 </label>
               </div>
             </div>
-            <p className="rag-hint">Ask a question about the resume</p>
+            <p className="rag-hint">
+              {queryMode === "session" && prepStatus === "pending"
+                ? "Analyzing your resume — you can ask questions once indexing finishes."
+                : "Ask a question about the resume"}
+            </p>
+            {prepStatus === "pending" && (
+              <p className="rag-chunk-status" aria-live="polite">
+                prepBot · segmenting resume → embedding vector index…
+              </p>
+            )}
+            {chunkIndex && prepStatus === "ready" && (
+              <p className="rag-chunk-status rag-chunk-status--ready" aria-live="polite">
+                prepBot · {chunkIndex.count} segment{chunkIndex.count === 1 ? "" : "s"} indexed
+                {chunkIndex.sections.length > 0 && (
+                  <> · {chunkIndex.sections.join(" · ")}</>
+                )}
+              </p>
+            )}
+            {briefSummary && prepStatus === "ready" && (
+              <p className="rag-hint" style={{ fontStyle: "italic", marginTop: "0.25rem" }}>
+                {briefSummary}
+              </p>
+            )}
             <input
               className={`rag-input${isHighlighting ? " animate-query-pop" : ""}`}
               value={question}
@@ -244,6 +354,24 @@ export default function Home() {
               {loadingQuery ? "Thinking" : "Ask"}
             </button>
           </div>
+
+          {starterQuestions.length > 0 && prepStatus === "ready" && !answer && (
+            <div className="rag-suggestions" style={{ marginTop: "1rem" }}>
+              <p className="rag-suggestions-label">Suggested questions:</p>
+              <div>
+                {starterQuestions.map((sq, i) => (
+                  <button
+                    key={i}
+                    className="rag-suggestion-btn"
+                    onClick={() => handleSuggestedQuestion(sq)}
+                    type="button"
+                  >
+                    {sq}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {error && (
             <div className="rag-error">⚠ {error}</div>
