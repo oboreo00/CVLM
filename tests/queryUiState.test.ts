@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   clearQueryOptionsForModeChange,
+  clearQueryOptionsForNewQuery,
   shouldClearQueryOnModeChange,
 } from "../client/src/lib/queryUiState.ts";
 
@@ -9,7 +10,13 @@ describe("queryUiState", () => {
     expect(shouldClearQueryOnModeChange("core", "session")).toBe(true);
     expect(clearQueryOptionsForModeChange("core", "session")).toEqual({
       clearQuestion: true,
+      clearHighlight: true,
+      clearError: true,
     });
+  });
+
+  it("new-query clear keeps highlight and error flags off", () => {
+    expect(clearQueryOptionsForNewQuery()).toEqual({});
   });
 
   it("does not clear when mode is unchanged", () => {

@@ -4,7 +4,11 @@ import {
   prepDisplayForModeSwitch,
   prepDisplayFromPayload,
 } from "@/lib/prepDisplayState";
-import { clearQueryOptionsForModeChange } from "@/lib/queryUiState";
+import {
+  clearQueryOptionsForModeChange,
+  clearQueryOptionsForNewQuery,
+  type ClearQueryOptions,
+} from "@/lib/queryUiState";
 import { consumePrepStatusStream, type PrepStatusPayload } from "@/lib/prepStatusStream";
 import {
   Tooltip,
@@ -48,7 +52,7 @@ export default function Home() {
     setStarterQuestions(next.starterQuestions);
   }, []);
 
-  const clearQueryResults = useCallback((options?: { clearQuestion?: boolean }) => {
+  const clearQueryResults = useCallback((options?: ClearQueryOptions) => {
     if (options?.clearQuestion) {
       setQuestion("");
     }
@@ -57,7 +61,12 @@ export default function Home() {
     setSuggestedQuestions([]);
     setHint(null);
     setAnswerExpanded(false);
-    setIsHighlighting(false);
+    if (options?.clearHighlight) {
+      setIsHighlighting(false);
+    }
+    if (options?.clearError) {
+      setError(null);
+    }
   }, []);
 
   const handleQueryModeChange = useCallback(
@@ -131,7 +140,11 @@ export default function Home() {
       }
       setIngestText("");
       setHasResume(true);
-      clearQueryResults({ clearQuestion: true });
+      clearQueryResults({
+        clearQuestion: true,
+        clearHighlight: true,
+        clearError: true,
+      });
       setQueryMode("session");
       setPrepStatus("pending");
       setStarterQuestions([]);
@@ -160,7 +173,7 @@ export default function Home() {
     if (!q || typeof q !== "string" || !q.trim()) return;
     setLoadingQuery(true);
     setError(null);
-    clearQueryResults();
+    clearQueryResults(clearQueryOptionsForNewQuery());
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const headers: Record<string, string> = { "Content-Type": "application/json" };
