@@ -16,6 +16,17 @@ export interface PrepStatusPayload {
   prepError?: string;
 }
 
+/** True when the client should open the prep SSE stream (not already terminal with starters). */
+export function shouldConnectPrepStatusStream(snapshot: PrepStatusPayload | null): boolean {
+  if (!snapshot) return true;
+  if (snapshot.prepStatus === "pending" || snapshot.prepStatus === "none") return true;
+  if (snapshot.prepStatus === "failed") return false;
+  if (snapshot.prepStatus === "ready") {
+    return (snapshot.brief?.starterQuestions?.length ?? 0) === 0;
+  }
+  return true;
+}
+
 /**
  * Authenticated SSE over fetch (supports Authorization header).
  * Calls onPayload for each event; resolves when the stream ends.
