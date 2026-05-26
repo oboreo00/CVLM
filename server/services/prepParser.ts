@@ -28,9 +28,10 @@ export function fallbackPrep(text: string): PrepResult {
       summary: "Resume indexed as a single document.",
       proofPoints: [],
       starterQuestions: [
-        "What are my top technical strengths?",
-        "Summarize my most recent role.",
-        "What industries have I worked in?",
+        "What is my most recent job title?",
+        "Which companies are listed on my resume?",
+        "What skills or technologies are mentioned?",
+        "What kinds of roles does my experience fit best?",
       ],
     },
   };

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import {
   prepDisplayForModeSwitch,
@@ -9,7 +9,12 @@ import {
   clearQueryOptionsForNewQuery,
   type ClearQueryOptions,
 } from "@/lib/queryUiState";
-import { consumePrepStatusStream, type PrepStatusPayload } from "@/lib/prepStatusStream";
+import {
+  consumePrepStatusStream,
+  fetchPrepStatusSnapshot,
+  shouldConnectPrepStatusStream,
+  type PrepStatusPayload,
+} from "@/lib/prepStatusStream";
 import {
   Tooltip,
   TooltipContent,
@@ -41,6 +46,7 @@ export default function Home() {
   const [starterQuestions, setStarterQuestions] = useState<string[]>([]);
   const [chunkIndex, setChunkIndex] = useState<{ count: number; sections: string[] } | null>(null);
   const [prepStreamNonce, setPrepStreamNonce] = useState(0);
+  const prepSyncGenRef = useRef(0);
 
   const { toast } = useToast();
 
@@ -105,10 +111,28 @@ export default function Home() {
 
   useEffect(() => {
     const controller = new AbortController();
+    const syncGen = ++prepSyncGenRef.current;
+    const applyIfCurrent = (data: PrepStatusPayload | null) => {
+      if (syncGen !== prepSyncGenRef.current) return;
+      applyPrepPayload(data);
+    };
 
     const runStream = async () => {
       try {
-        await consumePrepStatusStream(queryMode, applyPrepPayload, controller.signal);
+        let snapshot = await fetchPrepStatusSnapshot(queryMode, controller.signal);
+        if (syncGen !== prepSyncGenRef.current) return;
+        if (snapshot) {
+          applyIfCurrent(snapshot);
+        }
+
+        if (shouldConnectPrepStatusStream(snapshot)) {
+          await consumePrepStatusStream(queryMode, applyIfCurrent, controller.signal);
+          if (syncGen !== prepSyncGenRef.current) return;
+          snapshot = await fetchPrepStatusSnapshot(queryMode, controller.signal);
+          if (snapshot) {
+            applyIfCurrent(snapshot);
+          }
+        }
       } catch (err) {
         if ((err as Error).name !== "AbortError") {
           console.error("Prep status stream error", err);

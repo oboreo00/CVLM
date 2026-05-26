@@ -50,14 +50,20 @@ export async function runPrepBot(ai: unknown, text: string): Promise<PrepResult>
   "brief": {
     "summary": "2-3 sentence hiring summary",
     "proofPoints": ["dated or scoped proof points"],
-    "starterQuestions": ["3-5 specific questions a recruiter could ask"]
+    "starterQuestions": ["4-5 starter questions: mostly factual lookups plus one career-angle question"]
   }
 }
 
 Rules:
 - Split the resume into logical chunks (one role, project block, skills section, etc.). Aim for 6-15 chunks.
 - Each chunk must be self-contained and preserve original wording where possible.
-- starterQuestions must be specific to this person, not generic career advice.
+- starterQuestions (4-5 total):
+  - Write every question in first person (I, me, my) — the user clicks them verbatim. Never use the candidate's name or any proper name from the resume.
+  - Include 3-4 simple factual lookups answerable from the resume alone (What / Where / Which; under ~15 words; you may name employers, titles, tools, or schools).
+  - Include exactly 1 career-advice-style question grounded in their history (strengths, role fit, or next-step direction). Light inference from the resume only; no outside market data or long behavioral prompts.
+  - Good factual: "What was my title at Acme?", "Which languages are listed in my skills?"
+  - Good career (one only): "What kinds of roles does my background fit best?", "What are my strongest areas to highlight in interviews?"
+  - Bad: using the person's name ("What did Jane build at Acme?"), generic coaching with no resume tie-in, trick questions, or multi-part interview scenarios.
 
 Resume:
 ${text}`;

@@ -24,7 +24,7 @@ TECHNICAL SKILLS
 Languages: TypeScript, JavaScript (Node.js), Python, SQL, Java
 Frontend: React, Electron
 IDE: JetBrains PyCharm, VS Code, Cursor, Antigravity
-Databases: PostgreSQL
+Databases: PostgreSQL, MySQL
 Caching / Messaging: Redis, RabbitMQ
 Infrastructure: Docker, AWS, CI/CD pipelines, Linux
 Practices: REST API design, real-time systems, on-call operations, agile delivery
@@ -32,4 +32,4 @@ EDUCATION
 B.Sc. Mechanical Engineering — University of Toronto
 Certificate in Digital Animation — Centennial College
 PROJECTS AND INTERESTS
-CVLM — Career knowledge assistant built with Node.js, Supabase (pgvector), and Google Gemini embeddings. Hybrid RAG architecture with live web search fallback, multi-tenant session isolation, and semantic response caching. Developed using AI-assisted IDE tooling (VS Code and Antigravity).
+CVLM — End-to-end retrieval-augmented generation backend treating LLMs as core infrastructure. Ingestion accepts and resume immediately, then a background prep bot semantically chunks it into self-contained sections (experience, skills, projects), extracts structured profile and brief metadata, embeds each chunk with gemini-embedding-2, and stores 3072-dim vectors in Supabase Postgres (pgvector) with session-scoped isolation and RLS; clients track pending → ready over SSE before Q&A unlocks. Queries embed the question, rank chunks by cosine similarity, and synthesize answers with Gemini 2.5 Flash; when retrieval confidence drops, the stack rewrites the query with resume context and grounds answers via Gemini’s search tool (routed through Vertex AI in production). Structured query telemetry captures step-level latency, model attribution, token usage, and cache/relevance signals. Node/Express service deployed on Railway.
