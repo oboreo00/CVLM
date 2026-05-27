@@ -471,6 +471,10 @@
   margin-bottom: 0.6rem;
 }
 
+.rag-section-header .rag-label {
+  margin-right: 0.75rem;
+}
+
 .rag-collapsible-toggle {
   display: flex;
   align-items: center;

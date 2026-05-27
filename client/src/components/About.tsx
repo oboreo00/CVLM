@@ -32,6 +32,9 @@ export default function About({ open, onOpenChange }: AboutProps) {
           <h3>Hybrid Search Architecture</h3>
           <p>Leverages local vector embeddings alongside dynamic fallback to live web search for gaps in knowledge.</p>
 
+          <h3>PrepBot Dynamic Chunking</h3>
+          <p>Preprocesses resumes into semantic chunks in the background so indexing progress can stream into the UI, making status updates and suggested starter questions appear more smoothly.</p>
+
           <h3>Context-Aware Query Rewriting</h3>
           <p>Automatically injects your local context (e.g., location, seniority) into web search queries for more relevant results.</p>
 
