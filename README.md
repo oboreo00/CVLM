@@ -11,7 +11,7 @@ CVLM is not just a standard document parser; it is a smart, hybrid knowledge gra
 - Automatically break down complex career decisions into focused sub-questions.
 
 ### Key Features
-- **Smart Query Analysis:** Detects complex questions and suggests logical breakdowns.
+- **Agentic Query Routing:** Classifies each question and routes to local RAG, hybrid web+resume synthesis, or focused sub-questions based on intent and retrieval confidence.
 - **Supabase Authentication & Data Protection:** Integrates the `@supabase/supabase-js` client to issue anonymous JWTs, ensuring isolated sessions and robust data protection. Visitors can safely upload and query transient resumes without polluting the core knowledge graph, while preventing unauthorized bots or anonymous keys from reading cross-session data.
 - **Automated Data Lifecycle:** Transient session vectors are aggressively cleaned up via an automated 24-hour TTL (Time-To-Live) background job.
 - **Hybrid Search Architecture:** Leverages local `pgvector` embeddings alongside dynamic fallback to live web search for gaps in knowledge.
@@ -182,7 +182,8 @@ The backend provides two main endpoints:
    - If a `userId` is provided, the vectors are tagged and given a 24-hour TTL (Time-To-Live) for automatic cleanup.
    - Vectors are stored in PostgreSQL using the `pgvector` extension for efficient and accurate cosine similarity searches. An in-memory LRU cache also tracks active session vectors for sub-millisecond lookups.
 
-3. **Smart Query Processing:**
+3. **Agentic Query Routing:**
+   - Each question is classified (factual lookup vs career advice vs multi-part), then routed through cache, vector retrieval, local synthesis, or hybrid web fallback.
    - CVLM explicitly segments the vector search based on `queryMode` and `sessionId` to prevent cross-contamination of resumes.
    - It performs a cosine similarity search against the isolated vector graph.
    - **Hybrid Web Search:** If your query requires external knowledge (e.g., current salary data), CVLM automatically rewrites your query using your local context (e.g., location extracted from your resume) and queries the web.
@@ -204,6 +205,7 @@ CVLM is built with a "Production-First" mindset regarding observability. Every q
 - **Token Accounting:** Captures precise prompt and completion token counts to enable cost-per-query analysis.
 - **Retrieval Quality:** Logs the `relevanceScore` of every vector search to help fine-tune retrieval thresholds and chunking strategies.
 - **Cache Performance:** Tracks hit/miss status for the multi-layer caching system.
+- **Query Route:** Records which path handled the request (`cache`, `local_rag`, `hybrid_web_fallback`, `web_fallback_failed`, or `suggest_breakdown`).
 
 This detailed instrumentation serves as a foundation for any observability specialist to understand the internal decision-making of the RAG engine. While the current implementation persists raw data to PostgreSQL, the architecture is designed to eventually integrate with aggregated data analysis tools like **Datadog**, **LangSmith**, or **Honeycomb** for long-term trend analysis and anomaly detection.
 

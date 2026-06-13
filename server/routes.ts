@@ -11,6 +11,14 @@ import {
   formatLocalContext,
   getQuestionRelevanceScore,
 } from "./services/queryAnalyzer";
+import {
+  decideReplanTool,
+  executeReplanTool,
+  shouldInvokeReplanGate,
+  type ReplanGateDecision,
+  type ReplanGateInput,
+} from "./services/queryReplanGate";
+import { QUERY_ROUTES, REPLAN_TOOLS } from "./services/queryRoutes";
 import { AI_MODELS, AI_CONFIG } from "./services/aiConfig";
 import {
   getVectorStore,
@@ -253,6 +261,7 @@ export async function registerRoutes(
           question,
           queryMode: mode,
           userId,
+          route: QUERY_ROUTES.CACHE,
           totalDurationMs: Math.round(performance.now() - totalStart),
           relevanceScore: cachedResponse.relevanceScore || 0,
           modelsUsed: { synthesis: "cache", analysis: "cache", embedding: "cache" },
@@ -264,7 +273,7 @@ export async function registerRoutes(
           provider: "cache",
         }).catch((e) => console.error(e));
 
-        return res.json({ ...cachedResponse, _cacheHit: true });
+        return res.json({ ...cachedResponse, _cacheHit: true, _route: QUERY_ROUTES.CACHE });
       }
 
       const analysisStart = performance.now();
@@ -396,16 +405,52 @@ export async function registerRoutes(
       stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
 
       if (isUncertainAnswer(answer)) {
-        const fallbackResponse = await performUncertaintyFallback(
+        const gateInput: ReplanGateInput = {
+          question,
+          localAnswer: answer,
+          relevanceScore,
+          isAdviceQuestion: questionStructure.isAdviceQuestion,
+          isComplex: questionStructure.isComplex,
+          isSimpleFactualLookup: questionStructure.isSimpleFactualLookup,
+          hasLocalChunks: results.length > 0,
+          trigger: "uncertain_local_answer",
+        };
+
+        let replanDecision: ReplanGateDecision = {
+          tool: REPLAN_TOOLS.HYBRID_WEB,
+          reason: "gate_skipped",
+          confidence: 0,
+        };
+        if (shouldInvokeReplanGate(gateInput)) {
+          const replanStart = performance.now();
+          replanDecision = await decideReplanTool(ai, gateInput);
+          stepDurations.replanGate = Math.round(performance.now() - replanStart);
+        }
+
+        const { body: replanBody, stepDurations: replanSteps } = await executeReplanTool({
           ai,
           question,
-          results,
+          localAnswer: answer,
+          localResults: results,
           relevanceScore,
-          questionStructure,
+          structure: questionStructure,
           embeddingCacheHit,
-          mode,
-          userId,
-        );
+          queryMode: mode,
+          sessionId: userId,
+          decision: replanDecision,
+          rankChunks: (emb) => rankChunksBySimilarity(emb, vectorStore),
+          embedQuestion: (q) => getEmbedding(ai, q),
+        });
+        Object.assign(stepDurations, replanSteps);
+
+        const fallbackResponse = {
+          ...replanBody,
+          telemetry: {
+            ...(replanBody.telemetry as Record<string, unknown>),
+            totalDurationMs: Math.round(performance.now() - totalStart),
+            stepDurations,
+          },
+        };
         void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
         return res.json(fallbackResponse);
       }
@@ -415,15 +460,17 @@ export async function registerRoutes(
         sources,
         relevanceScore: Number(relevanceScore.toFixed(4)),
         isAdviceQuestion: questionStructure.isAdviceQuestion,
+        _route: QUERY_ROUTES.LOCAL_RAG,
         _cache: { embeddingHit: embeddingCacheHit, webSearchHit: false },
         telemetry: {
+          route: QUERY_ROUTES.LOCAL_RAG,
           totalDurationMs: Math.round(performance.now() - totalStart),
           stepDurations,
           relevanceScore: parseFloat(relevanceScore.toFixed(3)),
           provider: process.env.USE_VERTEX_AI === "true" ? "GCP Vertex AI" : "Google AI Studio",
           modelsUsed: {
             synthesis: AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
-            analysis: "local-rag",
+            analysis: QUERY_ROUTES.LOCAL_RAG,
             embedding: AI_MODELS.EMBEDDING,
           },
           cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: false, responseHit: false },

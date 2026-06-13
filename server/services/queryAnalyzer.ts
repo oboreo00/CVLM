@@ -6,6 +6,7 @@
 import { performance } from "perf_hooks";
 import { withGeminiRetries, getAnswer, isUncertainAnswer } from "./geminiClient.ts";
 import { AI_MODELS, AI_CONFIG } from "./aiConfig.ts";
+import { QUERY_ROUTES } from "./queryRoutes.ts";
 import { queryCache } from "./cacheService.ts";
 import { searchWeb } from "./webSearch.ts";
 
@@ -386,8 +387,10 @@ export async function performUncertaintyFallback(
           ? "This looks like a career-guidance question. Try these focused angles:"
           : "Try these simpler questions instead:"
         : undefined,
+      _route: QUERY_ROUTES.HYBRID_WEB_FALLBACK,
       _cache: { embeddingHit: embeddingCacheHit, webSearchHit: webCacheHit },
       telemetry: {
+        route: QUERY_ROUTES.HYBRID_WEB_FALLBACK,
         totalDurationMs: Math.round(performance.now() - totalStart),
         stepDurations,
         relevanceScore: parseFloat(relevanceScore.toFixed(3)),
@@ -412,6 +415,7 @@ export async function performUncertaintyFallback(
 
   // 4. Final failure body if web search also failed
   const finalTelemetry = {
+    route: QUERY_ROUTES.WEB_FALLBACK_FAILED,
     totalDurationMs: Math.round(performance.now() - totalStart),
     stepDurations,
     relevanceScore: parseFloat(relevanceScore.toFixed(3)),
@@ -437,6 +441,7 @@ export async function performUncertaintyFallback(
         ? "This looks like a career-guidance question. Try these focused angles:"
         : "Try these simpler questions instead:"
       : undefined,
+    _route: QUERY_ROUTES.WEB_FALLBACK_FAILED,
     telemetry: finalTelemetry
   };
   
