@@ -6,6 +6,7 @@ import {
   LOW_RELEVANCE_THRESHOLD,
   type ReplanGateInput,
 } from "../server/services/queryReplanGate.ts";
+import { INTENT_LABELS, RECOVERY_HINTS, REPLAN_TRIGGERS } from "@shared/queryIntent";
 import { REPLAN_TOOLS } from "@shared/queryRoutes";
 
 function baseInput(overrides: Partial<ReplanGateInput> = {}): ReplanGateInput {
@@ -17,7 +18,7 @@ function baseInput(overrides: Partial<ReplanGateInput> = {}): ReplanGateInput {
     isComplex: false,
     isSimpleFactualLookup: false,
     hasLocalChunks: true,
-    trigger: "uncertain_local_answer",
+    trigger: REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER,
     ...overrides,
   };
 }
@@ -51,7 +52,7 @@ describe("queryReplanGate", () => {
       const decision = decideReplanTool(
         baseInput({
           needsWeb: true,
-          trigger: "needs_web_intent",
+          trigger: REPLAN_TRIGGERS.NEEDS_WEB_INTENT,
           localAnswer: "",
         }),
       );
@@ -64,10 +65,10 @@ describe("queryReplanGate", () => {
       const decision = decideReplanTool(
         baseInput({
           needsWeb: false,
-          trigger: "low_relevance",
+          trigger: REPLAN_TRIGGERS.LOW_RELEVANCE,
           isAdviceQuestion: false,
           isSimpleFactualLookup: true,
-          intentLabel: "factual_personal",
+          intentLabel: INTENT_LABELS.FACTUAL_PERSONAL,
           relevanceScore: 0.05,
           localAnswer: "",
         }),
@@ -80,8 +81,8 @@ describe("queryReplanGate", () => {
       const decision = decideReplanTool(
         baseInput({
           needsWeb: false,
-          trigger: "low_relevance",
-          intentLabel: "career_advice",
+          trigger: REPLAN_TRIGGERS.LOW_RELEVANCE,
+          intentLabel: INTENT_LABELS.CAREER_ADVICE,
           relevanceScore: 0.05,
           localAnswer: "",
         }),
@@ -94,8 +95,8 @@ describe("queryReplanGate", () => {
       const decision = decideReplanTool(
         baseInput({
           needsWeb: false,
-          trigger: "low_relevance",
-          intentLabel: "off_domain",
+          trigger: REPLAN_TRIGGERS.LOW_RELEVANCE,
+          intentLabel: INTENT_LABELS.OFF_DOMAIN,
           relevanceScore: 0.05,
           localAnswer: "",
         }),
@@ -108,10 +109,10 @@ describe("queryReplanGate", () => {
       const decision = decideReplanTool(
         baseInput({
           needsWeb: false,
-          trigger: "uncertain_local_answer",
+          trigger: REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER,
           isAdviceQuestion: false,
           isSimpleFactualLookup: true,
-          intentLabel: "factual_personal",
+          intentLabel: INTENT_LABELS.FACTUAL_PERSONAL,
           relevanceScore: 0.5,
           localAnswer: "I don't know.",
         }),
@@ -124,7 +125,7 @@ describe("queryReplanGate", () => {
       const decision = decideReplanTool(
         baseInput({
           needsWeb: false,
-          trigger: "uncertain_local_answer",
+          trigger: REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER,
           relevanceScore: 0.5,
           localAnswer: "The provided text does not state whether you can become an EM.",
         }),
@@ -133,11 +134,46 @@ describe("queryReplanGate", () => {
       expect(decision.reason).toBe("uncertain_local_hybrid");
     });
 
+    it("honors recoveryHint when it matches gate policy", () => {
+      const decision = decideReplanTool(
+        baseInput({
+          needsWeb: false,
+          trigger: REPLAN_TRIGGERS.LOW_RELEVANCE,
+          isAdviceQuestion: false,
+          isSimpleFactualLookup: true,
+          intentLabel: INTENT_LABELS.FACTUAL_PERSONAL,
+          recoveryHint: RECOVERY_HINTS.RETRY_RETRIEVAL,
+          relevanceScore: 0.05,
+          localAnswer: "",
+        }),
+      );
+      expect(decision.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
+      expect(decision.reason).toBe("low_relevance_recovery_hint");
+      expect(decision.source).toBe("intent");
+    });
+
+    it("overrides recoveryHint when it conflicts with gate policy", () => {
+      const decision = decideReplanTool(
+        baseInput({
+          needsWeb: false,
+          trigger: REPLAN_TRIGGERS.LOW_RELEVANCE,
+          isAdviceQuestion: false,
+          isSimpleFactualLookup: true,
+          intentLabel: INTENT_LABELS.FACTUAL_PERSONAL,
+          recoveryHint: RECOVERY_HINTS.HYBRID_WEB,
+          relevanceScore: 0.05,
+          localAnswer: "",
+        }),
+      );
+      expect(decision.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
+      expect(decision.reason).toBe("low_relevance_gate_over_hint");
+    });
+
     it("decent local answer → local_rag", () => {
       const decision = decideReplanTool(
         baseInput({
           needsWeb: false,
-          trigger: "uncertain_local_answer",
+          trigger: REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER,
           relevanceScore: 0.6,
           localAnswer: "You led the platform team at Acme from 2019 to 2022.",
         }),

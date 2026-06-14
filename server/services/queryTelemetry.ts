@@ -20,6 +20,7 @@ export interface QueryTelemetryBase {
   intentLabel?: string;
   intentSource?: string;
   intentConfidence?: number;
+  recoveryHint?: string;
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
@@ -79,6 +80,9 @@ export function buildQueryTelemetry(
     (typeof bodyTelemetry?.intentConfidence === "number"
       ? bodyTelemetry.intentConfidence
       : undefined) ?? base.intentConfidence;
+  const recoveryHint =
+    (typeof bodyTelemetry?.recoveryHint === "string" ? bodyTelemetry.recoveryHint : undefined) ??
+    base.recoveryHint;
 
   return {
     route,
@@ -113,5 +117,6 @@ export function buildQueryTelemetry(
     ...(intentLabel ? { intentLabel } : {}),
     ...(intentSource ? { intentSource } : {}),
     ...(intentConfidence != null ? { intentConfidence } : {}),
+    ...(recoveryHint ? { recoveryHint } : {}),
   };
 }

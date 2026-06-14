@@ -25,7 +25,7 @@ export default function About({ open, onOpenChange }: AboutProps) {
           <h2>Key Features</h2>
           <h3>Agentic Query Routing</h3>
           <p>
-            Each question is classified by intent (<em>factual lookup</em>, <em>career advice</em>, <em>multi-part</em>, or <em>off-domain</em>), then routed through cache, vector retrieval, and local synthesis. If the first local answer is uncertain, a single replan step picks the best recovery — retry retrieval, hybrid web+resume synthesis, or focused sub-questions — without a second guess from scratch.
+            Each question is classified by intent (<em>factual lookup</em>, <em>career advice</em>, <em>multi-part</em>, or <em>off-domain</em>) with routing hints: <em>needsWeb</em> and a soft <em>recoveryHint</em>. The replan gate then applies a simple policy — needs web → hybrid synthesis; low retrieval quality or failed local answers → hybrid or retry by intent — without a second LLM router.
           </p>
 
           <h3>Natural Answers</h3>
@@ -64,7 +64,7 @@ export default function About({ open, onOpenChange }: AboutProps) {
             <li>Provide grounded answers from the document in natural language</li>
             <li>Link relevant sources in the Sources panel</li>
             <li>Suggest follow-up questions for deeper exploration</li>
-            <li>Break down complex queries into focused sub-questions when needed</li>
+            <li>Break down complex queries when hybrid or retry recovery is chosen</li>
           </ul>
           <h3>Example Questions</h3>
           <ul>
@@ -77,8 +77,8 @@ export default function About({ open, onOpenChange }: AboutProps) {
           <ul>
             <li><strong>Vector Store:</strong> PostgreSQL with pgvector for semantic search</li>
             <li><strong>AI Foundation:</strong> Google Gemini API via Google AI Studio, with a unified adapter designed to seamlessly pivot to enterprise Google Cloud Vertex AI</li>
-            <li><strong>Agentic Query Router:</strong> LLM intent classification → vector retrieval → local RAG; optional single-step replan on uncertain answers (retry retrieval, hybrid web, or sub-question breakdown)</li>
-            <li><strong>Observability:</strong> Every query logs route, intent, replan decisions, step latency, model attribution, and token usage</li>
+            <li><strong>Agentic Query Router:</strong> LLM intent classification (`needsWeb`, `recoveryHint`) → vector retrieval → local RAG or replan gate (hybrid web / retry retrieval)</li>
+            <li><strong>Observability:</strong> Every query logs route, intent, recoveryHint, replan decisions, step latency, model attribution, and token usage</li>
             <li><strong>Web Integration:</strong> Fallback to live web search for out-of-domain queries</li>
             <li><strong>Session & Security:</strong> Anonymous Supabase authentication paired with strict database-level Postgres Row-Level Security (RLS) and automatic 24-hour TTL document deletion</li>
             <li><strong>Response Caching:</strong> Semantic cache for repeated queries</li>

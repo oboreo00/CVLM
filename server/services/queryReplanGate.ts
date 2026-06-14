@@ -8,25 +8,29 @@
  */
 
 import {
-  QUERY_ROUTES,
-  REPLAN_TOOLS,
-  type QueryRoute,
-  type ReplanTool,
-} from "@shared/queryRoutes";
-import type { QueryIntentLabel } from "./queryIntentClassifier.ts";
+  INTENT_LABELS,
+  RECOVERY_HINTS,
+  REPLAN_TRIGGERS,
+  type IntentLabel,
+  type RecoveryHint,
+  type ReplanTrigger,
+} from "@shared/queryIntent";
+import { REPLAN_TOOLS, type ReplanTool } from "@shared/queryRoutes";
 import { performance } from "perf_hooks";
-import { getAnswer, isContextBoundAnswer, isUncertainAnswer, withGeminiRetries } from "./geminiClient.ts";
+import { getAnswer, isContextBoundAnswer, isUncertainAnswer } from "./geminiClient.ts";
 import { AI_MODELS } from "./aiConfig.ts";
 import {
   formatLocalContext,
   buildLocalRagPrompt,
   performUncertaintyFallback,
 } from "./queryAnalyzer.ts";
+import {
+  QUERY_ROUTES,
+  type QueryRoute,
+} from "@shared/queryRoutes";
 
-export type ReplanTrigger =
-  | "needs_web_intent"
-  | "low_relevance"
-  | "uncertain_local_answer";
+export type { ReplanTrigger } from "@shared/queryIntent";
+export { REPLAN_TRIGGERS } from "@shared/queryIntent";
 
 /** Matches legacy WEB_FALLBACK_SIMILARITY — retrieval quality cutoff. */
 export const LOW_RELEVANCE_THRESHOLD = 0.1;
@@ -45,10 +49,12 @@ export interface ReplanGateInput {
   isSimpleFactualLookup: boolean;
   hasLocalChunks: boolean;
   trigger: ReplanTrigger;
-  intentLabel?: QueryIntentLabel;
+  intentLabel?: IntentLabel;
   intentConfidence?: number;
   intentSource?: "llm" | "heuristic" | "guardrail";
   needsWeb?: boolean;
+  /** Soft suggestion from intent classification; gate policy may override. */
+  recoveryHint?: RecoveryHint;
 }
 
 export interface ReplanGateDecision {
@@ -87,7 +93,25 @@ export function isLowRelevance(
 }
 
 function preferRetryRetrieval(input: ReplanGateInput): boolean {
-  return input.isSimpleFactualLookup || input.intentLabel === "factual_personal";
+  return (
+    input.isSimpleFactualLookup || input.intentLabel === INTENT_LABELS.FACTUAL_PERSONAL
+  );
+}
+
+function policyRecoveryTool(input: ReplanGateInput): ReplanTool {
+  if (input.intentLabel === INTENT_LABELS.OFF_DOMAIN) return REPLAN_TOOLS.HYBRID_WEB;
+  if (preferRetryRetrieval(input)) return REPLAN_TOOLS.RETRY_RETRIEVAL;
+  return REPLAN_TOOLS.HYBRID_WEB;
+}
+
+const RECOVERY_HINT_TO_TOOL: Record<RecoveryHint, ReplanTool> = {
+  [RECOVERY_HINTS.HYBRID_WEB]: REPLAN_TOOLS.HYBRID_WEB,
+  [RECOVERY_HINTS.RETRY_RETRIEVAL]: REPLAN_TOOLS.RETRY_RETRIEVAL,
+  [RECOVERY_HINTS.LOCAL_RAG]: REPLAN_TOOLS.LOCAL_RAG,
+};
+
+function hintToTool(hint: RecoveryHint): ReplanTool {
+  return RECOVERY_HINT_TO_TOOL[hint];
 }
 
 function recoveryByIntent(
@@ -95,7 +119,27 @@ function recoveryByIntent(
   confidence: number,
   reasonPrefix: string,
 ): ReplanGateDecision {
-  if (input.intentLabel === "off_domain") {
+  const policyTool = policyRecoveryTool(input);
+
+  if (input.recoveryHint && input.recoveryHint !== RECOVERY_HINTS.LOCAL_RAG) {
+    const hintTool = hintToTool(input.recoveryHint);
+    if (hintTool === policyTool) {
+      return {
+        tool: hintTool,
+        reason: `${reasonPrefix}_recovery_hint`,
+        confidence,
+        source: "intent",
+      };
+    }
+    return {
+      tool: policyTool,
+      reason: `${reasonPrefix}_gate_over_hint`,
+      confidence,
+      source: "heuristic",
+    };
+  }
+
+  if (input.intentLabel === INTENT_LABELS.OFF_DOMAIN) {
     return {
       tool: REPLAN_TOOLS.HYBRID_WEB,
       reason: `${reasonPrefix}_off_domain`,
@@ -129,7 +173,9 @@ export function decideReplanTool(input: ReplanGateInput): ReplanGateDecision {
     return {
       tool: REPLAN_TOOLS.HYBRID_WEB,
       reason:
-        input.trigger === "needs_web_intent" ? "needs_web_skip_local" : "needs_web",
+        input.trigger === REPLAN_TRIGGERS.NEEDS_WEB_INTENT
+          ? "needs_web_skip_local"
+          : "needs_web",
       confidence,
       source: "intent",
     };
@@ -140,7 +186,7 @@ export function decideReplanTool(input: ReplanGateInput): ReplanGateDecision {
   }
 
   if (
-    input.trigger === "uncertain_local_answer" &&
+    input.trigger === REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER &&
     (isUncertainAnswer(input.localAnswer) || isContextBoundAnswer(input.localAnswer))
   ) {
     return recoveryByIntent(input, confidence, "uncertain_local");

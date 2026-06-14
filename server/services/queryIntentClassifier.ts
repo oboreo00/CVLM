@@ -5,14 +5,18 @@
  * Set QUERY_INTENT_LLM=false to use heuristics only (tests, rollback).
  */
 
+import {
+  INTENT_LABELS,
+  RECOVERY_HINTS,
+  isIntentLabel,
+  isRecoveryHint,
+  type IntentLabel,
+  type RecoveryHint,
+} from "@shared/queryIntent";
 import { withGeminiRetries } from "./geminiClient.ts";
 import { AI_MODELS } from "./aiConfig.ts";
 
-export type QueryIntentLabel =
-  | "factual_personal"
-  | "career_advice"
-  | "multi_part"
-  | "off_domain";
+export type { IntentLabel, RecoveryHint } from "@shared/queryIntent";
 
 export type IntentSource = "llm" | "heuristic" | "guardrail";
 
@@ -24,19 +28,64 @@ export interface QuestionStructure {
   isSimpleFactualLookup: boolean;
   estimatedSubQuestions: number;
   keywords: string[];
-  intentLabel?: QueryIntentLabel;
+  intentLabel?: IntentLabel;
   intentConfidence?: number;
   intentSource?: IntentSource;
   preferLocalRag?: boolean;
   needsWeb?: boolean;
+  recoveryHint?: RecoveryHint;
 }
 
-const VALID_INTENTS = new Set<QueryIntentLabel>([
-  "factual_personal",
-  "career_advice",
-  "multi_part",
-  "off_domain",
-]);
+export function deriveRecoveryHint(input: {
+  intentLabel?: IntentLabel;
+  needsWeb?: boolean;
+  isSimpleFactualLookup?: boolean;
+  isAdviceQuestion?: boolean;
+}): RecoveryHint {
+  if (input.needsWeb || input.intentLabel === INTENT_LABELS.OFF_DOMAIN) {
+    return RECOVERY_HINTS.HYBRID_WEB;
+  }
+  if (input.isSimpleFactualLookup || input.intentLabel === INTENT_LABELS.FACTUAL_PERSONAL) {
+    return RECOVERY_HINTS.RETRY_RETRIEVAL;
+  }
+  if (input.isAdviceQuestion || input.intentLabel === INTENT_LABELS.CAREER_ADVICE) {
+    return RECOVERY_HINTS.HYBRID_WEB;
+  }
+  return RECOVERY_HINTS.HYBRID_WEB;
+}
+
+function parseRecoveryHint(value: unknown): RecoveryHint | undefined {
+  if (typeof value !== "string" || !isRecoveryHint(value)) return undefined;
+  return value;
+}
+
+function clampRecoveryHint(structure: QuestionStructure): QuestionStructure {
+  const derived = deriveRecoveryHint(structure);
+  let recoveryHint = structure.recoveryHint ?? derived;
+
+  if (structure.needsWeb) recoveryHint = RECOVERY_HINTS.HYBRID_WEB;
+  else if (structure.isSimpleFactualLookup && recoveryHint === RECOVERY_HINTS.HYBRID_WEB) {
+    recoveryHint = RECOVERY_HINTS.RETRY_RETRIEVAL;
+  } else if (structure.intentLabel === INTENT_LABELS.OFF_DOMAIN) {
+    recoveryHint = RECOVERY_HINTS.HYBRID_WEB;
+  }
+
+  if (recoveryHint === structure.recoveryHint) return structure;
+  return { ...structure, recoveryHint };
+}
+
+function resolveHeuristicIntentLabel(input: {
+  isSimpleFactualLookup: boolean;
+  isAdviceQuestion: boolean;
+  isComplex: boolean;
+  isPersonal: boolean;
+}): IntentLabel {
+  if (input.isSimpleFactualLookup) return INTENT_LABELS.FACTUAL_PERSONAL;
+  if (input.isAdviceQuestion) return INTENT_LABELS.CAREER_ADVICE;
+  if (input.isComplex) return INTENT_LABELS.MULTI_PART;
+  if (input.isPersonal) return INTENT_LABELS.FACTUAL_PERSONAL;
+  return INTENT_LABELS.OFF_DOMAIN;
+}
 
 export function isQueryIntentLlmEnabled(): boolean {
   return process.env.QUERY_INTENT_LLM !== "false";
@@ -75,6 +124,12 @@ export function heuristicQuestionStructure(question: string): QuestionStructure 
     (isComplex === false || questionMarkCount <= 1);
 
   const needsBreakdown = isComplex || isAdviceQuestion;
+  const intentLabel = resolveHeuristicIntentLabel({
+    isSimpleFactualLookup,
+    isAdviceQuestion,
+    isComplex,
+    isPersonal,
+  });
 
   return {
     isComplex,
@@ -85,19 +140,17 @@ export function heuristicQuestionStructure(question: string): QuestionStructure 
       ? Math.max(2, conjunctionCount + questionMarkCount + (isAdviceQuestion ? 1 : 0))
       : 1,
     keywords: words.filter((w) => w.length > 4).slice(0, 5),
-    intentLabel: isSimpleFactualLookup
-      ? "factual_personal"
-      : isAdviceQuestion
-        ? "career_advice"
-        : isComplex
-          ? "multi_part"
-          : isPersonal
-            ? "factual_personal"
-            : "off_domain",
+    intentLabel,
     intentConfidence: 0.5,
     intentSource: "heuristic",
     preferLocalRag: isSimpleFactualLookup,
     needsWeb: !isPersonal && !isSimpleFactualLookup,
+    recoveryHint: deriveRecoveryHint({
+      intentLabel,
+      needsWeb: !isPersonal && !isSimpleFactualLookup,
+      isSimpleFactualLookup,
+      isAdviceQuestion: isAdviceQuestion && !isSimpleFactualLookup,
+    }),
   };
 }
 
@@ -111,13 +164,12 @@ export function parseQueryIntentResponse(text: string): Partial<QuestionStructur
       isComplex?: boolean;
       preferLocalRag?: boolean;
       needsWeb?: boolean;
+      recoveryHint?: string;
       estimatedSubQuestions?: number;
       confidence?: number;
     };
-    if (!parsed.intent || !VALID_INTENTS.has(parsed.intent as QueryIntentLabel)) {
-      return null;
-    }
-    const label = parsed.intent as QueryIntentLabel;
+    if (!parsed.intent || !isIntentLabel(parsed.intent)) return null;
+    const label = parsed.intent;
     return {
       intentLabel: label,
       isSimpleFactualLookup: Boolean(parsed.isSimpleFactualLookup),
@@ -125,6 +177,7 @@ export function parseQueryIntentResponse(text: string): Partial<QuestionStructur
       isComplex: Boolean(parsed.isComplex),
       preferLocalRag: Boolean(parsed.preferLocalRag),
       needsWeb: Boolean(parsed.needsWeb),
+      recoveryHint: parseRecoveryHint(parsed.recoveryHint),
       estimatedSubQuestions:
         typeof parsed.estimatedSubQuestions === "number"
           ? Math.max(1, Math.min(5, Math.round(parsed.estimatedSubQuestions)))
@@ -159,7 +212,7 @@ export function applyIntentGuardrails(
       isAdviceQuestion: true,
       preferLocalRag: false,
       needsWeb: true,
-      intentLabel: "career_advice",
+      intentLabel: INTENT_LABELS.CAREER_ADVICE,
     };
   }
 
@@ -178,7 +231,7 @@ export function applyIntentGuardrails(
     next = { ...next, isSimpleFactualLookup: false, preferLocalRag: false };
   }
 
-  if (next.intentLabel === "off_domain") {
+  if (next.intentLabel === INTENT_LABELS.OFF_DOMAIN) {
     next = { ...next, needsWeb: true, preferLocalRag: false, isPersonal: false };
   }
 
@@ -186,18 +239,18 @@ export function applyIntentGuardrails(
     next.intentSource = "guardrail";
   }
 
-  return next;
+  return clampRecoveryHint(next);
 }
 
 function mergeIntent(
   heuristic: QuestionStructure,
   llm: Partial<QuestionStructure>,
 ): QuestionStructure {
-  const label = llm.intentLabel ?? heuristic.intentLabel ?? "factual_personal";
+  const label = llm.intentLabel ?? heuristic.intentLabel ?? INTENT_LABELS.FACTUAL_PERSONAL;
   const isSimpleFactualLookup =
-    llm.isSimpleFactualLookup ?? (label === "factual_personal" && !llm.isAdviceQuestion);
-  const isAdviceQuestion = llm.isAdviceQuestion ?? label === "career_advice";
-  const isComplex = llm.isComplex ?? label === "multi_part";
+    llm.isSimpleFactualLookup ?? (label === INTENT_LABELS.FACTUAL_PERSONAL && !llm.isAdviceQuestion);
+  const isAdviceQuestion = llm.isAdviceQuestion ?? label === INTENT_LABELS.CAREER_ADVICE;
+  const isComplex = llm.isComplex ?? label === INTENT_LABELS.MULTI_PART;
 
   return {
     ...heuristic,
@@ -205,12 +258,22 @@ function mergeIntent(
     isSimpleFactualLookup,
     isAdviceQuestion,
     isComplex,
-    isPersonal: label !== "off_domain" && (isSimpleFactualLookup || isAdviceQuestion || isComplex || heuristic.isPersonal),
+    isPersonal:
+      label !== INTENT_LABELS.OFF_DOMAIN &&
+      (isSimpleFactualLookup || isAdviceQuestion || isComplex || heuristic.isPersonal),
     estimatedSubQuestions:
       llm.estimatedSubQuestions ??
       (isComplex || isAdviceQuestion ? Math.max(2, heuristic.estimatedSubQuestions) : 1),
     preferLocalRag: llm.preferLocalRag ?? isSimpleFactualLookup,
-    needsWeb: llm.needsWeb ?? (label === "off_domain" || isAdviceQuestion),
+    needsWeb: llm.needsWeb ?? (label === INTENT_LABELS.OFF_DOMAIN || isAdviceQuestion),
+    recoveryHint:
+      llm.recoveryHint ??
+      deriveRecoveryHint({
+        intentLabel: label,
+        needsWeb: llm.needsWeb ?? (label === INTENT_LABELS.OFF_DOMAIN || isAdviceQuestion),
+        isSimpleFactualLookup,
+        isAdviceQuestion,
+      }),
     intentConfidence: llm.intentConfidence ?? 0.7,
     intentSource: "llm",
   };
@@ -220,17 +283,20 @@ async function classifyQueryIntentWithLlm(
   ai: any,
   question: string,
 ): Promise<Partial<QuestionStructure> | null> {
+  const recoveryHintValues = Object.values(RECOVERY_HINTS).join(" | ");
   const prompt = `Classify this resume Q&A question. JSON only.
 
 intents:
-- factual_personal: about the candidate's own history (jobs, skills, certs, education)
-- career_advice: guidance, should I, paths, recommendations
-- multi_part: several distinct sub-questions
-- off_domain: unrelated to a resume (general trivia, smells, weather)
+- ${INTENT_LABELS.FACTUAL_PERSONAL}: about the candidate's own history (jobs, skills, certs, education)
+- ${INTENT_LABELS.CAREER_ADVICE}: guidance, should I, paths, recommendations
+- ${INTENT_LABELS.MULTI_PART}: several distinct sub-questions
+- ${INTENT_LABELS.OFF_DOMAIN}: unrelated to a resume (general trivia, smells, weather)
+
+recoveryHint values: ${recoveryHintValues} (suggested recovery if local RAG is insufficient)
 
 Q: ${question}
 
-{"intent":"...","isSimpleFactualLookup":bool,"isAdviceQuestion":bool,"isComplex":bool,"preferLocalRag":bool,"needsWeb":bool,"estimatedSubQuestions":1-5,"confidence":0.0-1.0}`;
+{"intent":"...","isSimpleFactualLookup":bool,"isAdviceQuestion":bool,"isComplex":bool,"preferLocalRag":bool,"needsWeb":bool,"recoveryHint":"${recoveryHintValues}","estimatedSubQuestions":1-5,"confidence":0.0-1.0}`;
 
   try {
     const response = (await withGeminiRetries("classifyQueryIntent", () =>
@@ -271,6 +337,7 @@ export async function classifyQueryIntent(
     factual: guarded.isSimpleFactualLookup,
     advice: guarded.isAdviceQuestion,
     complex: guarded.isComplex,
+    recoveryHint: guarded.recoveryHint,
   });
   return guarded;
 }

@@ -17,6 +17,7 @@ import {
   executeReplanTool,
   isLowRelevance,
   isReplanGateEnabled,
+  REPLAN_TRIGGERS,
   type ReplanGateDecision,
   type ReplanGateInput,
   type ReplanTrigger,
@@ -107,6 +108,7 @@ async function handleReplanGateRecovery(params: {
     intentConfidence: params.questionStructure.intentConfidence,
     intentSource: params.questionStructure.intentSource,
     needsWeb: params.questionStructure.needsWeb,
+    recoveryHint: params.questionStructure.recoveryHint,
   };
 
   let replanDecision: ReplanGateDecision = {
@@ -144,6 +146,7 @@ async function handleReplanGateRecovery(params: {
           intentLabel: params.questionStructure.intentLabel,
           intentSource: params.questionStructure.intentSource,
           intentConfidence: params.questionStructure.intentConfidence,
+          recoveryHint: params.questionStructure.recoveryHint,
         },
         fallback.telemetry as Record<string, unknown> | undefined,
         replanDecision,
@@ -193,6 +196,7 @@ async function handleReplanGateRecovery(params: {
         intentLabel: params.questionStructure.intentLabel,
         intentSource: params.questionStructure.intentSource,
         intentConfidence: params.questionStructure.intentConfidence,
+        recoveryHint: params.questionStructure.recoveryHint,
       },
       bodyTelemetry,
       replanDecision,
@@ -521,12 +525,12 @@ export async function registerRoutes(
 
       if (questionStructure.needsWeb) {
         stepDurations.synthesis = 0;
-        return runGateRecovery("needs_web_intent", "");
+        return runGateRecovery(REPLAN_TRIGGERS.NEEDS_WEB_INTENT, "");
       }
 
       if (isLowRelevance({ relevanceScore, hasLocalChunks })) {
         stepDurations.synthesis = 0;
-        return runGateRecovery("low_relevance", "");
+        return runGateRecovery(REPLAN_TRIGGERS.LOW_RELEVANCE, "");
       }
 
       const synthesisStart = performance.now();
@@ -541,7 +545,7 @@ export async function registerRoutes(
       stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
 
       if (isUncertainAnswer(answer) || isContextBoundAnswer(answer)) {
-        return runGateRecovery("uncertain_local_answer", answer, synthesisUsage);
+        return runGateRecovery(REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER, answer, synthesisUsage);
       }
 
       const successBody = {
@@ -569,6 +573,7 @@ export async function registerRoutes(
           intentLabel: questionStructure.intentLabel,
           intentSource: questionStructure.intentSource,
           intentConfidence: questionStructure.intentConfidence,
+          recoveryHint: questionStructure.recoveryHint,
         },
       };
 
