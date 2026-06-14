@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   applyReplanGuardrails,
+  INTENT_REPLAN_CONFIDENCE,
   parseReplanToolResponse,
   REPLAN_BORDERLINE_RELEVANCE,
+  replanToolFromIntent,
   resolveReplanHeuristic,
   shouldInvokeReplanGate,
   type ReplanGateInput,
 } from "../server/services/queryReplanGate.ts";
-import { REPLAN_TOOLS } from "../server/services/queryRoutes.ts";
+import { REPLAN_TOOLS } from "@shared/queryRoutes";
 
 function baseInput(overrides: Partial<ReplanGateInput> = {}): ReplanGateInput {
   return {
@@ -130,6 +132,59 @@ describe("queryReplanGate", () => {
         baseInput({ relevanceScore: 0.25 }),
       );
       expect(guarded.tool).toBe(REPLAN_TOOLS.SUGGEST_BREAKDOWN);
+    });
+  });
+
+  describe("replanToolFromIntent", () => {
+    it("maps confident LLM factual intent to retry_retrieval", () => {
+      const decision = replanToolFromIntent(
+        baseInput({
+          isSimpleFactualLookup: true,
+          isAdviceQuestion: false,
+          relevanceScore: 0.4,
+          intentLabel: "factual_personal",
+          intentConfidence: 0.9,
+          intentSource: "llm",
+        }),
+      );
+      expect(decision?.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
+      expect(decision?.source).toBe("intent");
+    });
+
+    it("maps confident off_domain intent to hybrid_web", () => {
+      const decision = replanToolFromIntent(
+        baseInput({
+          relevanceScore: 0.05,
+          intentLabel: "off_domain",
+          intentConfidence: 0.88,
+          intentSource: "llm",
+        }),
+      );
+      expect(decision?.tool).toBe(REPLAN_TOOLS.HYBRID_WEB);
+    });
+
+    it("skips intent routing when confidence is below threshold", () => {
+      expect(
+        replanToolFromIntent(
+          baseInput({
+            intentLabel: "factual_personal",
+            intentConfidence: INTENT_REPLAN_CONFIDENCE - 0.01,
+            intentSource: "llm",
+          }),
+        ),
+      ).toBeNull();
+    });
+
+    it("skips intent routing for heuristic-only classification", () => {
+      expect(
+        replanToolFromIntent(
+          baseInput({
+            intentLabel: "factual_personal",
+            intentConfidence: 0.95,
+            intentSource: "heuristic",
+          }),
+        ),
+      ).toBeNull();
     });
   });
 

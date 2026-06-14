@@ -24,7 +24,14 @@ export default function About({ open, onOpenChange }: AboutProps) {
             </p>
           <h2>Key Features</h2>
           <h3>Agentic Query Routing</h3>
-          <p>Classifies each question, then autonomously picks local RAG, hybrid web+resume synthesis, or focused sub-questions based on intent and retrieval confidence.</p>
+          <p>
+            Each question is classified by intent (<em>factual lookup</em>, <em>career advice</em>, <em>multi-part</em>, or <em>off-domain</em>), then routed through cache, vector retrieval, and local synthesis. If the first local answer is uncertain, a single replan step picks the best recovery — retry retrieval, hybrid web+resume synthesis, or focused sub-questions — without a second guess from scratch.
+          </p>
+
+          <h3>Natural Answers</h3>
+          <p>
+            Answers are written as direct prose. Retrieved resume sections and web links appear in the <strong>Sources</strong> panel below the answer — not as internal labels like &quot;Document 1&quot; or &quot;chunk 2&quot; in the text.
+          </p>
 
           <h3>Supabase Auth & Session Isolation</h3>
           <p>Secured with anonymous sign-ins and Postgres Row-Level Security (RLS) to ensure recruiters' transient resumes remain completely isolated, private, and out of reach from unauthorized bots or cross-session access.</p>
@@ -54,10 +61,10 @@ export default function About({ open, onOpenChange }: AboutProps) {
           <h3>Asking Questions</h3>
           <p>Use natural language to ask anything about the resume. CVLM will:</p>
           <ul>
-            <li>Provide grounded answers from the document</li>
-            <li>Link relevant sources</li>
+            <li>Provide grounded answers from the document in natural language</li>
+            <li>Link relevant sources in the Sources panel</li>
             <li>Suggest follow-up questions for deeper exploration</li>
-            <li>Break down complex queries into focused sub-questions</li>
+            <li>Break down complex queries into focused sub-questions when needed</li>
           </ul>
           <h3>Example Questions</h3>
           <ul>
@@ -70,7 +77,8 @@ export default function About({ open, onOpenChange }: AboutProps) {
           <ul>
             <li><strong>Vector Store:</strong> PostgreSQL with pgvector for semantic search</li>
             <li><strong>AI Foundation:</strong> Google Gemini API via Google AI Studio, with a unified adapter designed to seamlessly pivot to enterprise Google Cloud Vertex AI</li>
-            <li><strong>Agentic Query Router:</strong> Cache → intent classification → vector retrieval → local RAG or context-aware web fallback</li>
+            <li><strong>Agentic Query Router:</strong> LLM intent classification → vector retrieval → local RAG; optional single-step replan on uncertain answers (retry retrieval, hybrid web, or sub-question breakdown)</li>
+            <li><strong>Observability:</strong> Every query logs route, intent, replan decisions, step latency, model attribution, and token usage</li>
             <li><strong>Web Integration:</strong> Fallback to live web search for out-of-domain queries</li>
             <li><strong>Session & Security:</strong> Anonymous Supabase authentication paired with strict database-level Postgres Row-Level Security (RLS) and automatic 24-hour TTL document deletion</li>
             <li><strong>Response Caching:</strong> Semantic cache for repeated queries</li>

@@ -6,24 +6,21 @@
 import { performance } from "perf_hooks";
 import { withGeminiRetries, getAnswer, isUncertainAnswer } from "./geminiClient.ts";
 import { AI_MODELS, AI_CONFIG } from "./aiConfig.ts";
-import { QUERY_ROUTES } from "./queryRoutes.ts";
+import { QUERY_ROUTES } from "@shared/queryRoutes";
 import { queryCache } from "./cacheService.ts";
 import { searchWeb } from "./webSearch.ts";
+
+import {
+  heuristicQuestionStructure,
+  type QuestionStructure,
+} from "./queryIntentClassifier.ts";
+
+export type { QuestionStructure } from "./queryIntentClassifier.ts";
 
 interface VectorDoc {
   id: number;
   content: string;
   embedding: number[];
-}
-
-interface QuestionStructure {
-  isComplex: boolean;
-  isAdviceQuestion: boolean;
-  isPersonal: boolean;
-  /** Short, factual resume lookups (last job, what did I do, etc.) — not advice, not multi-part. */
-  isSimpleFactualLookup: boolean;
-  estimatedSubQuestions: number;
-  keywords: string[];
 }
 
 export interface DocumentMetadata {
@@ -34,72 +31,10 @@ export interface DocumentMetadata {
 }
 
 /**
- * Analyzes question complexity and structure
- * Returns metadata about whether question should be decomposed
+ * Sync heuristic intent (fallback). Prefer classifyQueryIntent() in routes.
  */
 export function analyzeQuestionStructure(question: string): QuestionStructure {
-  const words = question.toLowerCase().split(/\s+/);
-  const conjunctions = ["and", "but", "or", "however", "also", "additionally"];
-  const questions = ["how", "what", "when", "where", "who", "why"];
-  
-  // Count question marks (indicates multiple questions)
-  const questionMarkCount = (question.match(/\?/g) || []).length;
-  
-  // Count conjunctions that might indicate multi-part questions
-  const conjunctionCount = conjunctions.filter(conj => 
-    question.toLowerCase().includes(` ${conj} `)
-  ).length;
-  
-  // Count question keywords
-  const questionCount = questions.filter(q => 
-    question.toLowerCase().startsWith(q) || 
-    question.toLowerCase().includes(` ${q} `)
-  ).length;
-  
-  // Detect advice/life/decision questions - these have multiple aspects even with single question mark
-  const isAdviceQuestion = /should i|i should|which path|what career|what do i|what should|what would|could i|am i|can i|is it.*to|best.*to|right.*to|good.*to|choose|decision|path|future|better|worse|worth|recommend|guidanc|advic|option|alternative|pros|cons|benefit|drawback|strengt|weaknes|skill|ability|talent|ready|prepared|good at|capable/i.test(question);
-  
-  const isPersonal = isAdviceQuestion || /company|career|skill|experience|work|job|resum[ee]|strengt|weaknes|ability|talent|what.*i|what.*am.*i|my experience|did i|have i/i.test(question);
-
-  // Multi-part if: multiple questions, has conjunctions, OR is an advice question
-  const hasMultipleQuestions = questionMarkCount > 1;
-  const isComplex = 
-    hasMultipleQuestions || 
-    words.length > 25 || 
-    conjunctionCount > 1 || 
-    questionCount > 1;
-  
-  // Refined advice detection: only trigger if it's actually asking for advice/guidance, 
-  // not just a factual query about skills which can be answered by RAG directly.
-  const containsAdviceVerb = /should|could|would|best|better|right|choose|recommend|suggest|guidanc|advic|opinion|think|believe|path/i.test(question);
-  
-  // Direct factual queries about the person's own background should NOT be treated as advice questions
-  const isDirectPersonalQuery =
-    /skill|experience|background|history|role|title|education|project|achieve|done|did|got|have/i.test(
-      question,
-    ) && /i |me|my|got|have|who am i/i.test(question);
-
-  const adviceQuestionFinal = isAdviceQuestion && containsAdviceVerb && !isDirectPersonalQuery;
-
-  // Simple resume lookups — should use RAG directly, not "complex question" breakdown or web rewrite hints
-  const isSimpleFactualLookup =
-    isDirectPersonalQuery &&
-    /what did i|what have i|what was i|last (job|role|position|company)|recent (job|role)|my (last|recent|current|previous)|responsibilit|duties|achieve|accomplish|projects? at|work(ed)? at|role at/i.test(
-      question.toLowerCase(),
-    );
-
-  const needsBreakdown = isComplex || adviceQuestionFinal;
-
-  return {
-    isComplex,
-    isAdviceQuestion: adviceQuestionFinal,
-    isPersonal,
-    isSimpleFactualLookup,
-    estimatedSubQuestions: needsBreakdown
-      ? Math.max(2, conjunctionCount + questionMarkCount + (adviceQuestionFinal ? 1 : 0))
-      : 1,
-    keywords: words.filter(w => w.length > 4).slice(0, 5),
-  };
+  return heuristicQuestionStructure(question);
 }
 
 /**
@@ -364,7 +299,7 @@ export async function performUncertaintyFallback(
     1. If the local context contains direct answers (like the person's specific skills or experience), PRIORITIZE it.
     2. Use the web results to supplement, provide general advice, or fill in gaps.
     3. If there is a conflict, state what you found in both sources.
-    4. Start your answer by clearly stating what you found in their uploaded documents vs what you found on the web.`;
+    4. Write a direct, natural answer. You may briefly distinguish resume facts from web information, but do not cite document numbers, chunk labels, or source indices.`;
 
     const synthesisModel = AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0];
     const { text: answer, usage: synthesisUsage } = await getAnswer(ai, hybridPrompt, synthesisModel);
@@ -449,21 +384,39 @@ export async function performUncertaintyFallback(
 }
 
 /**
- * Formats local search results into a context string
+ * Formats local search results into a context string for synthesis.
+ * Uses resume metadata (section, company) — not numeric chunk labels the model might echo.
  */
 export function formatLocalContext(results: any[]): string {
   if (results.length === 0) return "None";
   return results
-    .map((r, i) => `[Document ${i + 1}]:\n${r.content}`)
+    .map((r) => {
+      const parts: string[] = [];
+      if (r.metadata?.section) parts.push(String(r.metadata.section));
+      if (r.metadata?.company) parts.push(String(r.metadata.company));
+      const header = parts.length > 0 ? parts.join(" — ") : null;
+      return header ? `${header}\n${r.content}` : r.content;
+    })
     .join("\n\n");
 }
 
 /**
- * Formats web search results into a context string
+ * Formats web search results into a context string for synthesis.
  */
 export function formatWebContext(results: any[]): string {
   if (!results || results.length === 0) return "None";
   return results
-    .map((r, i) => `[Web Source ${i + 1}] (${r.title}):\n${r.snippet}`)
+    .map((r) => {
+      const title = typeof r.title === "string" && r.title.trim() ? r.title.trim() : "Web result";
+      return `${title}\n${r.snippet}`;
+    })
     .join("\n\n");
+}
+
+/** Shared local-RAG synthesis instructions (routes + replan retry). */
+export const LOCAL_RAG_ANSWER_INSTRUCTIONS =
+  "You are a helpful assistant. Answer based ONLY on the following context. If the context partially relates to the question, say what is and is not stated. If unknown, say you don't know. Write a direct, natural answer — do not refer to document numbers, chunk labels, or source indices.";
+
+export function buildLocalRagPrompt(context: string, question: string): string {
+  return `${LOCAL_RAG_ANSWER_INSTRUCTIONS}\n\nContext:\n${context}\n\nQuestion: ${question}`;
 }

@@ -6,11 +6,12 @@ import { GeminiAdapter } from "./services/geminiAdapter";
 import { storage } from "./storage";
 import { withGeminiRetries, getAnswer, isUncertainAnswer, cosineSimilarity } from "./services/geminiClient";
 import {
-  analyzeQuestionStructure,
   performUncertaintyFallback,
   formatLocalContext,
+  buildLocalRagPrompt,
   getQuestionRelevanceScore,
 } from "./services/queryAnalyzer";
+import { classifyQueryIntent } from "./services/queryIntentClassifier";
 import {
   decideReplanTool,
   executeReplanTool,
@@ -18,7 +19,8 @@ import {
   type ReplanGateDecision,
   type ReplanGateInput,
 } from "./services/queryReplanGate";
-import { QUERY_ROUTES, REPLAN_TOOLS } from "./services/queryRoutes";
+import { QUERY_ROUTES, REPLAN_TOOLS, type QueryRoute } from "@shared/queryRoutes";
+import { buildQueryTelemetry } from "./services/queryTelemetry";
 import { AI_MODELS, AI_CONFIG } from "./services/aiConfig";
 import {
   getVectorStore,
@@ -277,7 +279,7 @@ export async function registerRoutes(
       }
 
       const analysisStart = performance.now();
-      const questionStructure = analyzeQuestionStructure(question);
+      const questionStructure = await classifyQueryIntent(ai, question);
       stepDurations.analysis = Math.round(performance.now() - analysisStart);
 
       const vectorStore = filterSearchableVectorDocs(getVectorStore(), mode, userId);
@@ -400,7 +402,7 @@ export async function registerRoutes(
         const company = r.metadata?.company ? `${r.metadata.company}: ` : "";
         return section + company + r.content.substring(0, 80) + "...";
       });
-      const prompt = `You are a helpful assistant. Answer based ONLY on the following context. If unknown, say you don't know.\n\nContext:\n${context}\n\nQuestion: ${question}`;
+      const prompt = buildLocalRagPrompt(context, question);
       const { text: answer, usage: synthesisUsage } = await getAnswer(ai, prompt);
       stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
 
@@ -414,6 +416,9 @@ export async function registerRoutes(
           isSimpleFactualLookup: questionStructure.isSimpleFactualLookup,
           hasLocalChunks: results.length > 0,
           trigger: "uncertain_local_answer",
+          intentLabel: questionStructure.intentLabel,
+          intentConfidence: questionStructure.intentConfidence,
+          intentSource: questionStructure.intentSource,
         };
 
         let replanDecision: ReplanGateDecision = {
@@ -443,13 +448,32 @@ export async function registerRoutes(
         });
         Object.assign(stepDurations, replanSteps);
 
+        const bodyTelemetry = replanBody.telemetry as Record<string, unknown> | undefined;
+        const replanRoute =
+          (bodyTelemetry?.route as QueryRoute | undefined) ?? QUERY_ROUTES.LOCAL_RAG;
+        const replanCache = replanBody._cache as { webSearchHit?: boolean } | undefined;
+
         const fallbackResponse = {
           ...replanBody,
-          telemetry: {
-            ...(replanBody.telemetry as Record<string, unknown>),
-            totalDurationMs: Math.round(performance.now() - totalStart),
-            stepDurations,
-          },
+          telemetry: buildQueryTelemetry(
+            replanRoute,
+            {
+              totalDurationMs: Math.round(performance.now() - totalStart),
+              stepDurations,
+              relevanceScore,
+              embeddingCacheHit,
+              webSearchHit: replanCache?.webSearchHit ?? false,
+              promptTokens: synthesisUsage?.promptTokenCount ?? 0,
+              completionTokens: synthesisUsage?.candidatesTokenCount ?? 0,
+              totalTokens: synthesisUsage?.totalTokenCount ?? 0,
+              analysisLabel: questionStructure.intentLabel ?? QUERY_ROUTES.LOCAL_RAG,
+              intentLabel: questionStructure.intentLabel,
+              intentSource: questionStructure.intentSource,
+              intentConfidence: questionStructure.intentConfidence,
+            },
+            bodyTelemetry,
+            replanDecision,
+          ),
         };
         void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
         return res.json(fallbackResponse);
@@ -470,13 +494,16 @@ export async function registerRoutes(
           provider: process.env.USE_VERTEX_AI === "true" ? "GCP Vertex AI" : "Google AI Studio",
           modelsUsed: {
             synthesis: AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
-            analysis: QUERY_ROUTES.LOCAL_RAG,
+            analysis: questionStructure.intentLabel ?? QUERY_ROUTES.LOCAL_RAG,
             embedding: AI_MODELS.EMBEDDING,
           },
           cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: false, responseHit: false },
           promptTokens: synthesisUsage?.promptTokenCount || 0,
           completionTokens: synthesisUsage?.candidatesTokenCount || 0,
           totalTokens: synthesisUsage?.totalTokenCount || 0,
+          intentLabel: questionStructure.intentLabel,
+          intentSource: questionStructure.intentSource,
+          intentConfidence: questionStructure.intentConfidence,
         },
       };
 

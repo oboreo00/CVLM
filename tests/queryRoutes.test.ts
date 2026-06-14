@@ -3,7 +3,7 @@ import {
   QUERY_ROUTES,
   REPLAN_TOOLS,
   replanToolDefaultRoute,
-} from "../server/services/queryRoutes.ts";
+} from "@shared/queryRoutes";
 
 describe("queryRoutes", () => {
   it("maps replan tools to default query routes", () => {

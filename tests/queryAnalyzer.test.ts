@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   analyzeQuestionStructure,
+  formatLocalContext,
+  formatWebContext,
   getQuestionRelevanceScore,
 } from "../server/services/queryAnalyzer.ts";
 
@@ -12,6 +14,39 @@ describe("queryAnalyzer", () => {
       expect(s.isAdviceQuestion).toBe(false);
       expect(s.isSimpleFactualLookup).toBe(true);
       expect(s.estimatedSubQuestions).toBe(1);
+    });
+
+    it("treats certification questions as simple factual lookups", () => {
+      const s = analyzeQuestionStructure(
+        "Did I have some special certificate with aws or google cloud?",
+      );
+      expect(s.isSimpleFactualLookup).toBe(true);
+      expect(s.isAdviceQuestion).toBe(false);
+    });
+  });
+
+  describe("formatLocalContext", () => {
+    it("uses section and company headers instead of document numbers", () => {
+      const context = formatLocalContext([
+        {
+          content: "Built RAG pipelines on GCP.",
+          metadata: { section: "experience", company: "Acme Corp" },
+        },
+        { content: "AWS, TypeScript", metadata: { section: "skills" } },
+      ]);
+      expect(context).toContain("experience — Acme Corp");
+      expect(context).toContain("skills\nAWS");
+      expect(context).not.toMatch(/Document \d/i);
+    });
+  });
+
+  describe("formatWebContext", () => {
+    it("uses page titles instead of numbered web source labels", () => {
+      const context = formatWebContext([
+        { title: "AWS Certifications", snippet: "Overview of certs." },
+      ]);
+      expect(context).toContain("AWS Certifications");
+      expect(context).not.toMatch(/Web Source \d/i);
     });
   });
 

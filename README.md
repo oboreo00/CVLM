@@ -11,7 +11,8 @@ CVLM is not just a standard document parser; it is a smart, hybrid knowledge gra
 - Automatically break down complex career decisions into focused sub-questions.
 
 ### Key Features
-- **Agentic Query Routing:** Classifies each question and routes to local RAG, hybrid web+resume synthesis, or focused sub-questions based on intent and retrieval confidence.
+- **Agentic Query Routing:** LLM intent classification on every question, then route to local RAG, hybrid web+resume synthesis, focused sub-questions, or a single replan recovery step when the first local answer is uncertain.
+- **Natural Answers:** Synthesis prompts produce direct prose; retrieved resume sections and web links appear in the UI **Sources** panel instead of "Document 1" / "chunk 2" labels in the answer text.
 - **Supabase Authentication & Data Protection:** Integrates the `@supabase/supabase-js` client to issue anonymous JWTs, ensuring isolated sessions and robust data protection. Visitors can safely upload and query transient resumes without polluting the core knowledge graph, while preventing unauthorized bots or anonymous keys from reading cross-session data.
 - **Automated Data Lifecycle:** Transient session vectors are aggressively cleaned up via an automated 24-hour TTL (Time-To-Live) background job.
 - **Hybrid Search Architecture:** Leverages local `pgvector` embeddings alongside dynamic fallback to live web search for gaps in knowledge.
@@ -60,6 +61,10 @@ PORT=5000
 
 # Node environment (development or production)
 NODE_ENV=development
+
+# Agentic routing toggles (optional)
+QUERY_INTENT_LLM=true          # LLM intent classifier; set false for heuristics only
+REPLAN_GATE_ENABLED=true       # Single-step replan on uncertain local answers; set false to skip
 ```
 
 ### Getting a Gemini API Key
@@ -183,7 +188,9 @@ The backend provides two main endpoints:
    - Vectors are stored in PostgreSQL using the `pgvector` extension for efficient and accurate cosine similarity searches. An in-memory LRU cache also tracks active session vectors for sub-millisecond lookups.
 
 3. **Agentic Query Routing:**
-   - Each question is classified (factual lookup vs career advice vs multi-part), then routed through cache, vector retrieval, local synthesis, or hybrid web fallback.
+   - **Intent classification:** Each question is classified (`factual_personal`, `career_advice`, `multi_part`, `off_domain`) via an LLM-first classifier with heuristic fallback (`QUERY_INTENT_LLM=false` for rollback).
+   - **Primary path:** Cache → vector retrieval → local synthesis. Answers are written in natural language; context blocks use resume section/company metadata internally, not numbered chunk labels echoed to the user.
+   - **Replan gate:** If local synthesis is uncertain (`REPLAN_GATE_ENABLED`, default on), one recovery tool is chosen — retry local retrieval, hybrid web fallback, or suggest simpler sub-questions. High-confidence upstream intent can skip a second router LLM.
    - CVLM explicitly segments the vector search based on `queryMode` and `sessionId` to prevent cross-contamination of resumes.
    - It performs a cosine similarity search against the isolated vector graph.
    - **Hybrid Web Search:** If your query requires external knowledge (e.g., current salary data), CVLM automatically rewrites your query using your local context (e.g., location extracted from your resume) and queries the web.
@@ -200,8 +207,9 @@ The backend provides two main endpoints:
 CVLM is built with a "Production-First" mindset regarding observability. Every query execution is traced and logged into a dedicated telemetry table, providing a rich foundation for performance tuning.
 
 ### Key Telemetry Data
-- **Step Latency Breakdown:** Identifies bottlenecks by measuring individual durations for Analysis, Embedding, Web Search, and Synthesis.
+- **Step Latency Breakdown:** Identifies bottlenecks by measuring individual durations for Analysis, Embedding, Web Search, Synthesis, and Replan Gate.
 - **Model Attribution:** Records exactly which model handled each stage of the orchestration (e.g., Flash for analysis vs. Pro for answering).
+- **Intent & Replan:** Logs `intentLabel`, `intentSource`, `intentConfidence`, and when triggered `replanTool`, `replanSource`, `replanReason`.
 - **Token Accounting:** Captures precise prompt and completion token counts to enable cost-per-query analysis.
 - **Retrieval Quality:** Logs the `relevanceScore` of every vector search to help fine-tune retrieval thresholds and chunking strategies.
 - **Cache Performance:** Tracks hit/miss status for the multi-layer caching system.

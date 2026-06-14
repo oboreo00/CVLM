@@ -1,8 +1,8 @@
 /**
  * Single-step replan gate for uncertain local RAG answers.
  *
- * Heuristics + guardrails pick a recovery tool without an LLM in most cases.
- * LLM router runs only in the relevance gray zone. Max one gate decision per query.
+ * Heuristics + upstream LLM intent pick a recovery tool without a second router LLM in most cases.
+ * chooseReplanTool runs only in the relevance gray zone when intent is uncertain.
  */
 
 import {
@@ -10,17 +10,17 @@ import {
   REPLAN_TOOLS,
   type QueryRoute,
   type ReplanTool,
-} from "./queryRoutes.ts";
+} from "@shared/queryRoutes";
+import type { QueryIntentLabel } from "./queryIntentClassifier.ts";
 import { performance } from "perf_hooks";
 import { getAnswer, isUncertainAnswer, withGeminiRetries } from "./geminiClient.ts";
 import { AI_MODELS } from "./aiConfig.ts";
 import {
   formatLocalContext,
+  buildLocalRagPrompt,
   performUncertaintyFallback,
   suggestQuestionBreakdown,
 } from "./queryAnalyzer.ts";
-
-export type { QueryRoute, ReplanTool } from "./queryRoutes.ts";
 
 export type ReplanTrigger = "uncertain_local_answer" | "borderline_relevance";
 
@@ -32,6 +32,9 @@ export function isReplanGateEnabled(): boolean {
 /** Gray zone above WEB_FALLBACK_SIMILARITY (0.1) where routing is ambiguous. */
 export const REPLAN_BORDERLINE_RELEVANCE = { min: 0.1, max: 0.35 } as const;
 
+/** Min confidence from classifyQueryIntent (LLM) to drive replan tool directly. */
+export const INTENT_REPLAN_CONFIDENCE = 0.75;
+
 export interface ReplanGateInput {
   question: string;
   localAnswer: string;
@@ -41,13 +44,16 @@ export interface ReplanGateInput {
   isSimpleFactualLookup: boolean;
   hasLocalChunks: boolean;
   trigger: ReplanTrigger;
+  intentLabel?: QueryIntentLabel;
+  intentConfidence?: number;
+  intentSource?: "llm" | "heuristic" | "guardrail";
 }
 
 export interface ReplanGateDecision {
   tool: ReplanTool;
   reason: string;
   confidence: number;
-  source?: "heuristic" | "llm" | "guardrail";
+  source?: "heuristic" | "llm" | "guardrail" | "intent";
 }
 
 export interface ReplanStructure {
@@ -142,6 +148,60 @@ export function resolveReplanHeuristic(input: ReplanGateInput): ReplanGateDecisi
   return null;
 }
 
+/**
+ * Maps high-confidence upstream intent (classifyQueryIntent) to a replan tool.
+ * Skips chooseReplanTool when the query was already understood at the start.
+ */
+export function replanToolFromIntent(input: ReplanGateInput): ReplanGateDecision | null {
+  if (input.intentSource !== "llm") return null;
+  if ((input.intentConfidence ?? 0) < INTENT_REPLAN_CONFIDENCE) return null;
+  if (!input.intentLabel) return null;
+
+  if (!input.hasLocalChunks) {
+    return {
+      tool: REPLAN_TOOLS.HYBRID_WEB,
+      reason: "intent_no_local_chunks",
+      confidence: input.intentConfidence ?? 0.8,
+      source: "intent",
+    };
+  }
+
+  const lowRelevance = input.relevanceScore < REPLAN_BORDERLINE_RELEVANCE.min;
+
+  switch (input.intentLabel) {
+    case "factual_personal":
+      return {
+        tool: lowRelevance ? REPLAN_TOOLS.HYBRID_WEB : REPLAN_TOOLS.RETRY_RETRIEVAL,
+        reason: lowRelevance ? "intent_factual_low_relevance" : "intent_factual_personal",
+        confidence: input.intentConfidence ?? 0.8,
+        source: "intent",
+      };
+    case "career_advice":
+      return {
+        tool: lowRelevance ? REPLAN_TOOLS.HYBRID_WEB : REPLAN_TOOLS.SUGGEST_BREAKDOWN,
+        reason: lowRelevance ? "intent_advice_low_relevance" : "intent_career_advice",
+        confidence: input.intentConfidence ?? 0.8,
+        source: "intent",
+      };
+    case "multi_part":
+      return {
+        tool: REPLAN_TOOLS.SUGGEST_BREAKDOWN,
+        reason: "intent_multi_part",
+        confidence: input.intentConfidence ?? 0.8,
+        source: "intent",
+      };
+    case "off_domain":
+      return {
+        tool: REPLAN_TOOLS.HYBRID_WEB,
+        reason: "intent_off_domain",
+        confidence: input.intentConfidence ?? 0.8,
+        source: "intent",
+      };
+    default:
+      return null;
+  }
+}
+
 /** Clamp LLM/heuristic choices that waste tokens or violate intent. */
 export function applyReplanGuardrails(
   decision: ReplanGateDecision,
@@ -186,6 +246,13 @@ export async function decideReplanTool(
   ai: any,
   input: ReplanGateInput,
 ): Promise<ReplanGateDecision> {
+  const fromIntent = replanToolFromIntent(input);
+  if (fromIntent) {
+    const guarded = applyReplanGuardrails(fromIntent, input);
+    console.log("[ReplanGate] intent", guarded);
+    return guarded;
+  }
+
   const heuristic = resolveReplanHeuristic(input);
   if (heuristic) {
     const guarded = applyReplanGuardrails(heuristic, input);
@@ -404,7 +471,7 @@ export async function executeReplanTool(
 
     if (retryResults.length > 0) {
       const context = formatLocalContext(retryResults);
-      const retryPrompt = `You are a helpful assistant. Answer based ONLY on the following context. If unknown, say you don't know.\n\nContext:\n${context}\n\nQuestion: ${question}`;
+      const retryPrompt = buildLocalRagPrompt(context, question);
       const synthStart = performance.now();
       const { text: retryAnswer } = await getAnswer(ai, retryPrompt);
       stepDurations.retrySynthesis = Math.round(performance.now() - synthStart);
@@ -428,7 +495,7 @@ export async function executeReplanTool(
       }
     }
 
-    if (structure.isAdviceQuestion || structure.isComplex) {
+    if (structure.isAdviceQuestion || structure.isComplex || structure.isSimpleFactualLookup) {
       const fallback = await performUncertaintyFallback(
         ai,
         question,
