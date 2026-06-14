@@ -30,6 +30,12 @@
   to { opacity: 1; transform: translateY(0); }
 }
 
+.rag-header-title-row {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
 .rag-header {
   margin-bottom: 2.5rem;
   padding-bottom: 1.5rem;
@@ -559,13 +565,18 @@
   animation: queryPop 0.4s ease-out;
 }
 
+.rag-intel-btn-wrap {
+  position: relative;
+  display: inline-flex;
+  margin-left: 1rem;
+}
+
 .rag-intel-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 60px;
   height: 28px;
-  margin-left: 1rem;
   background: transparent;
   border: 1px solid rgba(122, 179, 138, 0.25);
   border-radius: 2px;
@@ -576,7 +587,25 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   cursor: pointer;
-  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s, transform 0.1s;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+
+.rag-intel-btn--glow {
+  animation: intelBtnGlow 0.48s ease-out;
+}
+
+@keyframes intelBtnGlow {
+  0% {
+    border-color: rgba(134, 197, 152, 0.65);
+    box-shadow: 0 0 0 0 rgba(134, 197, 152, 0.28);
+  }
+  40% {
+    box-shadow: 0 0 14px 2px rgba(74, 122, 85, 0.22);
+  }
+  100% {
+    border-color: rgba(122, 179, 138, 0.25);
+    box-shadow: 0 0 0 0 rgba(134, 197, 152, 0);
+  }
 }
 
 .rag-intel-btn:hover {
@@ -586,7 +615,17 @@
 }
 
 .rag-intel-btn:active {
-  transform: scale(0.95);
+  transform: scale(0.98);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rag-intel-btn--glow {
+    animation: none;
+  }
+
+  .rag-intel-btn:active {
+    transform: none;
+  }
 }
 
 .rag-readme-modal {

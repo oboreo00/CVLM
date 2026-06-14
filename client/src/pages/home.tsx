@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import About from "@/components/About";
+import AboutButton from "@/components/AboutButton";
 import { AnswerMarkdown } from "@/components/AnswerMarkdown";
 import "./home.css";
 
@@ -236,7 +237,7 @@ export default function Home() {
       <div className="rag-root">
         <div className="rag-card">
           <div className="rag-header">
-            <div style={{ display: 'flex', alignItems: 'center', marginBottom: '0.5rem' }}>
+            <div className="rag-header-title-row">
               <TooltipProvider delayDuration={200}>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -251,13 +252,7 @@ export default function Home() {
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
-              <button
-                className="rag-intel-btn"
-                onClick={() => setShowReadmeModal(true)}
-                title="Learn about CVLM"
-              >
-                About
-              </button>
+              <AboutButton onClick={() => setShowReadmeModal(true)} />
             </div>
             <p className="rag-subtitle">Career Knowledge Graph · Grounded Answers · Hybrid Search</p>
           </div>
