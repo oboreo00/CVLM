@@ -1,12 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  applyReplanGuardrails,
-  INTENT_REPLAN_CONFIDENCE,
-  parseReplanToolResponse,
-  REPLAN_BORDERLINE_RELEVANCE,
-  replanToolFromIntent,
-  resolveReplanHeuristic,
-  shouldInvokeReplanGate,
+  decideReplanTool,
+  isLowRelevance,
+  isReplanGateEnabled,
+  LOW_RELEVANCE_THRESHOLD,
   type ReplanGateInput,
 } from "../server/services/queryReplanGate.ts";
 import { REPLAN_TOOLS } from "@shared/queryRoutes";
@@ -30,187 +27,134 @@ describe("queryReplanGate", () => {
     delete process.env.REPLAN_GATE_ENABLED;
   });
 
-  describe("shouldInvokeReplanGate", () => {
-    it("invokes on uncertain local answers when enabled", () => {
-      expect(shouldInvokeReplanGate(baseInput())).toBe(true);
+  describe("isLowRelevance", () => {
+    it("is true when there are no chunks", () => {
+      expect(isLowRelevance({ relevanceScore: 0.5, hasLocalChunks: false })).toBe(true);
     });
 
-    it("invokes on borderline relevance for non-factual questions", () => {
+    it("is true below the threshold", () => {
       expect(
-        shouldInvokeReplanGate(
-          baseInput({
-            trigger: "borderline_relevance",
-            relevanceScore: 0.2,
-            isSimpleFactualLookup: false,
-          }),
-        ),
+        isLowRelevance({
+          relevanceScore: LOW_RELEVANCE_THRESHOLD - 0.01,
+          hasLocalChunks: true,
+        }),
       ).toBe(true);
     });
 
-    it("skips borderline relevance for simple factual lookups", () => {
-      expect(
-        shouldInvokeReplanGate(
-          baseInput({
-            trigger: "borderline_relevance",
-            relevanceScore: 0.2,
-            isSimpleFactualLookup: true,
-          }),
-        ),
-      ).toBe(false);
-    });
-
-    it("skips borderline relevance below the gray zone", () => {
-      expect(
-        shouldInvokeReplanGate(
-          baseInput({
-            trigger: "borderline_relevance",
-            relevanceScore: REPLAN_BORDERLINE_RELEVANCE.min - 0.01,
-          }),
-        ),
-      ).toBe(false);
-    });
-
-    it("skips when REPLAN_GATE_ENABLED=false", () => {
-      process.env.REPLAN_GATE_ENABLED = "false";
-      expect(shouldInvokeReplanGate(baseInput())).toBe(false);
+    it("is false at decent relevance with chunks", () => {
+      expect(isLowRelevance({ relevanceScore: 0.5, hasLocalChunks: true })).toBe(false);
     });
   });
 
-  describe("resolveReplanHeuristic", () => {
-    it("routes simple factual lookups to retry without LLM", () => {
-      const decision = resolveReplanHeuristic(
+  describe("decideReplanTool routing tree", () => {
+    it("needsWeb → hybrid_web", () => {
+      const decision = decideReplanTool(
         baseInput({
-          question: "What did I do in my last job?",
-          isAdviceQuestion: false,
-          isSimpleFactualLookup: true,
-          relevanceScore: 0.5,
+          needsWeb: true,
+          trigger: "needs_web_intent",
+          localAnswer: "",
         }),
       );
-      expect(decision?.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
-      expect(decision?.source).toBe("heuristic");
+      expect(decision.tool).toBe(REPLAN_TOOLS.HYBRID_WEB);
+      expect(decision.reason).toBe("needs_web_skip_local");
+      expect(decision.source).toBe("intent");
     });
 
-    it("routes advice questions to suggest_breakdown when relevance is not rock-bottom", () => {
-      const decision = resolveReplanHeuristic(baseInput({ relevanceScore: 0.2 }));
-      expect(decision?.tool).toBe(REPLAN_TOOLS.SUGGEST_BREAKDOWN);
-    });
-
-    it("routes advice with very low relevance to hybrid_web", () => {
-      const decision = resolveReplanHeuristic(
-        baseInput({ relevanceScore: REPLAN_BORDERLINE_RELEVANCE.min - 0.01 }),
-      );
-      expect(decision?.tool).toBe(REPLAN_TOOLS.HYBRID_WEB);
-    });
-
-    it("returns null in the gray zone for generic uncertain answers", () => {
-      expect(
-        resolveReplanHeuristic(
-          baseInput({
-            isAdviceQuestion: false,
-            isComplex: false,
-            isSimpleFactualLookup: false,
-            relevanceScore: 0.2,
-          }),
-        ),
-      ).toBeNull();
-    });
-  });
-
-  describe("applyReplanGuardrails", () => {
-    it("blocks hybrid_web for simple factual lookups", () => {
-      const guarded = applyReplanGuardrails(
-        { tool: REPLAN_TOOLS.HYBRID_WEB, reason: "model_choice", confidence: 0.9, source: "llm" },
-        baseInput({ isSimpleFactualLookup: true, isAdviceQuestion: false }),
-      );
-      expect(guarded.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
-      expect(guarded.source).toBe("guardrail");
-    });
-
-    it("blocks local_rag for advice questions", () => {
-      const guarded = applyReplanGuardrails(
-        { tool: REPLAN_TOOLS.LOCAL_RAG, reason: "model_choice", confidence: 0.9, source: "llm" },
-        baseInput({ relevanceScore: 0.25 }),
-      );
-      expect(guarded.tool).toBe(REPLAN_TOOLS.SUGGEST_BREAKDOWN);
-    });
-  });
-
-  describe("replanToolFromIntent", () => {
-    it("maps confident LLM factual intent to retry_retrieval", () => {
-      const decision = replanToolFromIntent(
+    it("low relevance + factual → retry_retrieval", () => {
+      const decision = decideReplanTool(
         baseInput({
-          isSimpleFactualLookup: true,
+          needsWeb: false,
+          trigger: "low_relevance",
           isAdviceQuestion: false,
-          relevanceScore: 0.4,
+          isSimpleFactualLookup: true,
           intentLabel: "factual_personal",
-          intentConfidence: 0.9,
-          intentSource: "llm",
-        }),
-      );
-      expect(decision?.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
-      expect(decision?.source).toBe("intent");
-    });
-
-    it("maps confident off_domain intent to hybrid_web", () => {
-      const decision = replanToolFromIntent(
-        baseInput({
           relevanceScore: 0.05,
-          intentLabel: "off_domain",
-          intentConfidence: 0.88,
-          intentSource: "llm",
+          localAnswer: "",
         }),
       );
-      expect(decision?.tool).toBe(REPLAN_TOOLS.HYBRID_WEB);
+      expect(decision.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
+      expect(decision.reason).toBe("low_relevance_retry");
     });
 
-    it("skips intent routing when confidence is below threshold", () => {
-      expect(
-        replanToolFromIntent(
-          baseInput({
-            intentLabel: "factual_personal",
-            intentConfidence: INTENT_REPLAN_CONFIDENCE - 0.01,
-            intentSource: "llm",
-          }),
-        ),
-      ).toBeNull();
+    it("low relevance + career advice → hybrid_web", () => {
+      const decision = decideReplanTool(
+        baseInput({
+          needsWeb: false,
+          trigger: "low_relevance",
+          intentLabel: "career_advice",
+          relevanceScore: 0.05,
+          localAnswer: "",
+        }),
+      );
+      expect(decision.tool).toBe(REPLAN_TOOLS.HYBRID_WEB);
+      expect(decision.reason).toBe("low_relevance_hybrid");
     });
 
-    it("skips intent routing for heuristic-only classification", () => {
-      expect(
-        replanToolFromIntent(
-          baseInput({
-            intentLabel: "factual_personal",
-            intentConfidence: 0.95,
-            intentSource: "heuristic",
-          }),
-        ),
-      ).toBeNull();
+    it("low relevance + off_domain → hybrid_web", () => {
+      const decision = decideReplanTool(
+        baseInput({
+          needsWeb: false,
+          trigger: "low_relevance",
+          intentLabel: "off_domain",
+          relevanceScore: 0.05,
+          localAnswer: "",
+        }),
+      );
+      expect(decision.tool).toBe(REPLAN_TOOLS.HYBRID_WEB);
+      expect(decision.reason).toBe("low_relevance_off_domain");
+    });
+
+    it("uncertain factual local answer → retry_retrieval", () => {
+      const decision = decideReplanTool(
+        baseInput({
+          needsWeb: false,
+          trigger: "uncertain_local_answer",
+          isAdviceQuestion: false,
+          isSimpleFactualLookup: true,
+          intentLabel: "factual_personal",
+          relevanceScore: 0.5,
+          localAnswer: "I don't know.",
+        }),
+      );
+      expect(decision.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
+      expect(decision.reason).toBe("uncertain_local_retry");
+    });
+
+    it("uncertain advice local answer → hybrid_web", () => {
+      const decision = decideReplanTool(
+        baseInput({
+          needsWeb: false,
+          trigger: "uncertain_local_answer",
+          relevanceScore: 0.5,
+          localAnswer: "The provided text does not state whether you can become an EM.",
+        }),
+      );
+      expect(decision.tool).toBe(REPLAN_TOOLS.HYBRID_WEB);
+      expect(decision.reason).toBe("uncertain_local_hybrid");
+    });
+
+    it("decent local answer → local_rag", () => {
+      const decision = decideReplanTool(
+        baseInput({
+          needsWeb: false,
+          trigger: "uncertain_local_answer",
+          relevanceScore: 0.6,
+          localAnswer: "You led the platform team at Acme from 2019 to 2022.",
+        }),
+      );
+      expect(decision.tool).toBe(REPLAN_TOOLS.LOCAL_RAG);
+      expect(decision.reason).toBe("local_sufficient");
     });
   });
 
-  describe("parseReplanToolResponse", () => {
-    it("parses valid JSON tool choices", () => {
-      const decision = parseReplanToolResponse(
-        '{"tool":"hybrid_web","reason":"needs market context","confidence":0.82}',
-      );
-      expect(decision).toEqual({
-        tool: REPLAN_TOOLS.HYBRID_WEB,
-        reason: "needs market context",
-        confidence: 0.82,
-      });
+  describe("isReplanGateEnabled", () => {
+    it("defaults to enabled", () => {
+      expect(isReplanGateEnabled()).toBe(true);
     });
 
-    it("rejects unknown tools", () => {
-      expect(
-        parseReplanToolResponse('{"tool":"call_mom","reason":"nope","confidence":1}'),
-      ).toBeNull();
-    });
-
-    it("handles fenced JSON", () => {
-      const decision = parseReplanToolResponse(
-        '```json\n{"tool":"retry_retrieval","reason":"weak chunks","confidence":0.6}\n```',
-      );
-      expect(decision?.tool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
+    it("can be disabled via env", () => {
+      process.env.REPLAN_GATE_ENABLED = "false";
+      expect(isReplanGateEnabled()).toBe(false);
     });
   });
 });

@@ -4,20 +4,22 @@ import type { Server } from "http";
 import { api } from "@shared/routes";
 import { GeminiAdapter } from "./services/geminiAdapter";
 import { storage } from "./storage";
-import { withGeminiRetries, getAnswer, isUncertainAnswer, cosineSimilarity } from "./services/geminiClient";
+import { withGeminiRetries, getAnswer, isUncertainAnswer, isContextBoundAnswer, cosineSimilarity } from "./services/geminiClient";
 import {
   performUncertaintyFallback,
   formatLocalContext,
   buildLocalRagPrompt,
   getQuestionRelevanceScore,
 } from "./services/queryAnalyzer";
-import { classifyQueryIntent } from "./services/queryIntentClassifier";
+import { classifyQueryIntent, type QuestionStructure } from "./services/queryIntentClassifier";
 import {
   decideReplanTool,
   executeReplanTool,
-  shouldInvokeReplanGate,
+  isLowRelevance,
+  isReplanGateEnabled,
   type ReplanGateDecision,
   type ReplanGateInput,
+  type ReplanTrigger,
 } from "./services/queryReplanGate";
 import { QUERY_ROUTES, REPLAN_TOOLS, type QueryRoute } from "@shared/queryRoutes";
 import { buildQueryTelemetry } from "./services/queryTelemetry";
@@ -40,8 +42,6 @@ import { emitPrepUpdate, prepChannelKey, subscribePrepUpdates, writeSseEvent } f
 import { getManifestPayload, type PrepStatusPayload } from "./services/prepPayload";
 
 const TOP_K_CHUNKS = 5;
-/** Below this blended top-K relevance score, skip local synthesis and fall back to web search. */
-const WEB_FALLBACK_SIMILARITY = 0.1;
 
 async function getEmbedding(
   ai: GeminiAdapter,
@@ -72,6 +72,132 @@ function rankChunksBySimilarity(
     }))
     .sort((a, b) => b.similarity - a.similarity)
     .slice(0, TOP_K_CHUNKS);
+}
+
+async function handleReplanGateRecovery(params: {
+  ai: GeminiAdapter;
+  question: string;
+  localAnswer: string;
+  results: any[];
+  relevanceScore: number;
+  questionStructure: QuestionStructure;
+  embeddingCacheHit: boolean;
+  mode: "core" | "session";
+  userId?: string;
+  vectorStore: ReturnType<typeof getVectorStore>;
+  trigger: ReplanTrigger;
+  stepDurations: Record<string, number>;
+  totalStart: number;
+  synthesisUsage?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+    totalTokenCount?: number;
+  };
+}) {
+  const gateInput: ReplanGateInput = {
+    question: params.question,
+    localAnswer: params.localAnswer,
+    relevanceScore: params.relevanceScore,
+    isAdviceQuestion: params.questionStructure.isAdviceQuestion,
+    isComplex: params.questionStructure.isComplex,
+    isSimpleFactualLookup: params.questionStructure.isSimpleFactualLookup,
+    hasLocalChunks: params.results.length > 0,
+    trigger: params.trigger,
+    intentLabel: params.questionStructure.intentLabel,
+    intentConfidence: params.questionStructure.intentConfidence,
+    intentSource: params.questionStructure.intentSource,
+    needsWeb: params.questionStructure.needsWeb,
+  };
+
+  let replanDecision: ReplanGateDecision = {
+    tool: REPLAN_TOOLS.HYBRID_WEB,
+    reason: "gate_disabled",
+    confidence: 0,
+  };
+
+  if (!isReplanGateEnabled()) {
+    const fallback = await performUncertaintyFallback(
+      params.ai,
+      params.question,
+      params.results,
+      params.relevanceScore,
+      params.questionStructure,
+      params.embeddingCacheHit,
+      params.mode,
+      params.userId,
+    );
+    return {
+      ...fallback,
+      telemetry: buildQueryTelemetry(
+        QUERY_ROUTES.HYBRID_WEB_FALLBACK,
+        {
+          totalDurationMs: Math.round(performance.now() - params.totalStart),
+          stepDurations: params.stepDurations,
+          relevanceScore: params.relevanceScore,
+          embeddingCacheHit: params.embeddingCacheHit,
+          webSearchHit:
+            (fallback._cache as { webSearchHit?: boolean } | undefined)?.webSearchHit ?? false,
+          promptTokens: params.synthesisUsage?.promptTokenCount ?? 0,
+          completionTokens: params.synthesisUsage?.candidatesTokenCount ?? 0,
+          totalTokens: params.synthesisUsage?.totalTokenCount ?? 0,
+          analysisLabel: params.questionStructure.intentLabel ?? QUERY_ROUTES.LOCAL_RAG,
+          intentLabel: params.questionStructure.intentLabel,
+          intentSource: params.questionStructure.intentSource,
+          intentConfidence: params.questionStructure.intentConfidence,
+        },
+        fallback.telemetry as Record<string, unknown> | undefined,
+        replanDecision,
+      ),
+    };
+  }
+
+  const replanStart = performance.now();
+  replanDecision = decideReplanTool(gateInput);
+  params.stepDurations.replanGate = Math.round(performance.now() - replanStart);
+
+  const { body: replanBody, stepDurations: replanSteps } = await executeReplanTool({
+    ai: params.ai,
+    question: params.question,
+    localAnswer: params.localAnswer,
+    localResults: params.results,
+    relevanceScore: params.relevanceScore,
+    structure: params.questionStructure,
+    embeddingCacheHit: params.embeddingCacheHit,
+    queryMode: params.mode,
+    sessionId: params.userId,
+    decision: replanDecision,
+    rankChunks: (emb) => rankChunksBySimilarity(emb, params.vectorStore),
+    embedQuestion: (q) => getEmbedding(params.ai, q),
+  });
+  Object.assign(params.stepDurations, replanSteps);
+
+  const bodyTelemetry = replanBody.telemetry as Record<string, unknown> | undefined;
+  const replanRoute =
+    (bodyTelemetry?.route as QueryRoute | undefined) ?? QUERY_ROUTES.LOCAL_RAG;
+  const replanCache = replanBody._cache as { webSearchHit?: boolean } | undefined;
+
+  return {
+    ...replanBody,
+    telemetry: buildQueryTelemetry(
+      replanRoute,
+      {
+        totalDurationMs: Math.round(performance.now() - params.totalStart),
+        stepDurations: params.stepDurations,
+        relevanceScore: params.relevanceScore,
+        embeddingCacheHit: params.embeddingCacheHit,
+        webSearchHit: replanCache?.webSearchHit ?? false,
+        promptTokens: params.synthesisUsage?.promptTokenCount ?? 0,
+        completionTokens: params.synthesisUsage?.candidatesTokenCount ?? 0,
+        totalTokens: params.synthesisUsage?.totalTokenCount ?? 0,
+        analysisLabel: params.questionStructure.intentLabel ?? QUERY_ROUTES.LOCAL_RAG,
+        intentLabel: params.questionStructure.intentLabel,
+        intentSource: params.questionStructure.intentSource,
+        intentConfidence: params.questionStructure.intentConfidence,
+      },
+      bodyTelemetry,
+      replanDecision,
+    ),
+  };
 }
 
 export async function registerRoutes(
@@ -361,38 +487,46 @@ export async function registerRoutes(
         results = rankChunksBySimilarity(embedding, vectorStore);
       }
 
-      const isHybridSearch = questionStructure.isAdviceQuestion || questionStructure.isComplex;
-      const preferLocalRag =
-        questionStructure.isSimpleFactualLookup && results.length > 0;
-
-      if (relevanceScore < WEB_FALLBACK_SIMILARITY && !isHybridSearch && !preferLocalRag) {
-        const fallbackResponse = await performUncertaintyFallback(
+      const hasLocalChunks = results.length > 0;
+      const runGateRecovery = async (
+        trigger: ReplanTrigger,
+        localAnswer: string,
+        synthesisUsage?: {
+          promptTokenCount?: number;
+          candidatesTokenCount?: number;
+          totalTokenCount?: number;
+        },
+      ) => {
+        const response = await handleReplanGateRecovery({
           ai,
           question,
+          localAnswer,
           results,
           relevanceScore,
           questionStructure,
           embeddingCacheHit,
           mode,
           userId,
-        );
-        void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
-        return res.json(fallbackResponse);
+          vectorStore,
+          trigger,
+          stepDurations,
+          totalStart,
+          synthesisUsage,
+        });
+        void storage
+          .insertQueryLog({ question, queryMode: mode, userId, ...response.telemetry })
+          .catch(console.error);
+        return res.json(response);
+      };
+
+      if (questionStructure.needsWeb) {
+        stepDurations.synthesis = 0;
+        return runGateRecovery("needs_web_intent", "");
       }
 
-      if (results.length === 0) {
-        const fallbackResponse = await performUncertaintyFallback(
-          ai,
-          question,
-          results,
-          relevanceScore,
-          questionStructure,
-          embeddingCacheHit,
-          mode,
-          userId,
-        );
-        void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
-        return res.json(fallbackResponse);
+      if (isLowRelevance({ relevanceScore, hasLocalChunks })) {
+        stepDurations.synthesis = 0;
+        return runGateRecovery("low_relevance", "");
       }
 
       const synthesisStart = performance.now();
@@ -406,77 +540,8 @@ export async function registerRoutes(
       const { text: answer, usage: synthesisUsage } = await getAnswer(ai, prompt);
       stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
 
-      if (isUncertainAnswer(answer)) {
-        const gateInput: ReplanGateInput = {
-          question,
-          localAnswer: answer,
-          relevanceScore,
-          isAdviceQuestion: questionStructure.isAdviceQuestion,
-          isComplex: questionStructure.isComplex,
-          isSimpleFactualLookup: questionStructure.isSimpleFactualLookup,
-          hasLocalChunks: results.length > 0,
-          trigger: "uncertain_local_answer",
-          intentLabel: questionStructure.intentLabel,
-          intentConfidence: questionStructure.intentConfidence,
-          intentSource: questionStructure.intentSource,
-        };
-
-        let replanDecision: ReplanGateDecision = {
-          tool: REPLAN_TOOLS.HYBRID_WEB,
-          reason: "gate_skipped",
-          confidence: 0,
-        };
-        if (shouldInvokeReplanGate(gateInput)) {
-          const replanStart = performance.now();
-          replanDecision = await decideReplanTool(ai, gateInput);
-          stepDurations.replanGate = Math.round(performance.now() - replanStart);
-        }
-
-        const { body: replanBody, stepDurations: replanSteps } = await executeReplanTool({
-          ai,
-          question,
-          localAnswer: answer,
-          localResults: results,
-          relevanceScore,
-          structure: questionStructure,
-          embeddingCacheHit,
-          queryMode: mode,
-          sessionId: userId,
-          decision: replanDecision,
-          rankChunks: (emb) => rankChunksBySimilarity(emb, vectorStore),
-          embedQuestion: (q) => getEmbedding(ai, q),
-        });
-        Object.assign(stepDurations, replanSteps);
-
-        const bodyTelemetry = replanBody.telemetry as Record<string, unknown> | undefined;
-        const replanRoute =
-          (bodyTelemetry?.route as QueryRoute | undefined) ?? QUERY_ROUTES.LOCAL_RAG;
-        const replanCache = replanBody._cache as { webSearchHit?: boolean } | undefined;
-
-        const fallbackResponse = {
-          ...replanBody,
-          telemetry: buildQueryTelemetry(
-            replanRoute,
-            {
-              totalDurationMs: Math.round(performance.now() - totalStart),
-              stepDurations,
-              relevanceScore,
-              embeddingCacheHit,
-              webSearchHit: replanCache?.webSearchHit ?? false,
-              promptTokens: synthesisUsage?.promptTokenCount ?? 0,
-              completionTokens: synthesisUsage?.candidatesTokenCount ?? 0,
-              totalTokens: synthesisUsage?.totalTokenCount ?? 0,
-              analysisLabel: questionStructure.intentLabel ?? QUERY_ROUTES.LOCAL_RAG,
-              intentLabel: questionStructure.intentLabel,
-              intentSource: questionStructure.intentSource,
-              intentConfidence: questionStructure.intentConfidence,
-            },
-            bodyTelemetry,
-            replanDecision,
-          ),
-        };
-        void storage.insertQueryLog({ question, queryMode: mode, userId, ...fallbackResponse.telemetry }).catch(console.error);
-        return res.json(fallbackResponse);
+      if (isUncertainAnswer(answer) || isContextBoundAnswer(answer)) {
+        return runGateRecovery("uncertain_local_answer", answer, synthesisUsage);
       }
 
       const successBody = {

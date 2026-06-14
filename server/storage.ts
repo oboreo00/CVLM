@@ -1,6 +1,7 @@
 import { eq, sql, isNull, and } from "drizzle-orm";
 import { db } from "./db";
 import { documents, queryLogs, type InsertDocument, type Document } from "@shared/schema";
+import { pickQueryLogFields } from "./services/queryTelemetry";
 import { DOC_TYPES, type PrepStatus } from "@shared/resumeTypes";
 
 export interface IStorage {
@@ -98,11 +99,10 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async insertQueryLog(log: any): Promise<void> {
-    await db.insert(queryLogs).values({
-      ...log,
-      relevanceScore: log.relevanceScore?.toString(),
-    });
+  async insertQueryLog(log: Record<string, unknown>): Promise<void> {
+    await db.insert(queryLogs).values(
+      pickQueryLogFields(log as Parameters<typeof pickQueryLogFields>[0]),
+    );
   }
 }
 

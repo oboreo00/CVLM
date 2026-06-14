@@ -25,6 +25,34 @@ export interface QueryTelemetryBase {
   totalTokens?: number;
 }
 
+/** Maps telemetry + request fields to query_logs row shape. */
+export function pickQueryLogFields(
+  log: Record<string, unknown> & {
+    question: string;
+    queryMode: string;
+    totalDurationMs: number;
+  },
+) {
+  return {
+    question: log.question,
+    queryMode: log.queryMode,
+    userId: log.userId as string | undefined,
+    route: log.route as string | undefined,
+    intentLabel: log.intentLabel as string | undefined,
+    replanTool: (log.replanTool as string | undefined) ?? null,
+    totalDurationMs: log.totalDurationMs,
+    relevanceScore:
+      log.relevanceScore != null ? String(log.relevanceScore) : undefined,
+    modelsUsed: log.modelsUsed,
+    stepDurations: log.stepDurations,
+    cacheStatus: log.cacheStatus,
+    promptTokens: log.promptTokens as number | undefined,
+    completionTokens: log.completionTokens as number | undefined,
+    totalTokens: log.totalTokens as number | undefined,
+    provider: log.provider as string | undefined,
+  };
+}
+
 /** Fields required by query_logs insert (non-null for observability). */
 export function buildQueryTelemetry(
   route: QueryRoute,

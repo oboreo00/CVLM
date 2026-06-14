@@ -56,6 +56,9 @@ export const queryLogs = pgTable("query_logs", {
   createdAt: timestamp("created_at").defaultNow(),
   userId: uuid("user_id"),
   provider: text("provider"),
+  route: text("route"),
+  replanTool: text("replan_tool"),
+  intentLabel: text("intent_label"),
 }, (t) => [
   pgPolicy("Users can view own query logs", {
     for: "select",

@@ -338,7 +338,8 @@ export async function performUncertaintyFallback(
         cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: webCacheHit, responseHit: false },
         promptTokens,
         completionTokens,
-        totalTokens: promptTokens + completionTokens
+        totalTokens: promptTokens + completionTokens,
+        intentLabel: structure.intentLabel,
       }
     };
     
@@ -363,7 +364,8 @@ export async function performUncertaintyFallback(
     cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: webCacheHit, responseHit: false },
     promptTokens,
     completionTokens,
-    totalTokens: promptTokens + completionTokens
+    totalTokens: promptTokens + completionTokens,
+    intentLabel: structure.intentLabel,
   };
 
   const failureBody = {

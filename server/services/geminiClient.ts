@@ -45,6 +45,25 @@ export function isUncertainAnswer(answer: string): boolean {
   );
 }
 
+/** Resume-only hedges that refuse to answer forward-looking or advisory questions. */
+export function isContextBoundAnswer(answer: string): boolean {
+  const lower = answer.toLowerCase().trim();
+  return (
+    lower.includes("does not state") ||
+    lower.includes("do not state") ||
+    lower.includes("doesn't state") ||
+    lower.includes("not stated") ||
+    lower.includes("provided text") ||
+    lower.includes("the context does not") ||
+    lower.includes("context does not") ||
+    lower.includes("cannot determine") ||
+    lower.includes("can't determine") ||
+    lower.includes("unable to determine") ||
+    lower.includes("does not mention") ||
+    lower.includes("doesn't mention")
+  );
+}
+
 function isRetriableGeminiError(err: unknown): boolean {
   const e = err as {
     status?: number;

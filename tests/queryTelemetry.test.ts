@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildQueryTelemetry } from "../server/services/queryTelemetry.ts";
+import { buildQueryTelemetry, pickQueryLogFields } from "../server/services/queryTelemetry.ts";
 import { QUERY_ROUTES, REPLAN_TOOLS } from "@shared/queryRoutes";
 
 describe("queryTelemetry", () => {
@@ -40,6 +40,22 @@ describe("queryTelemetry", () => {
     expect(telemetry.totalTokens).toBe(112);
     expect(telemetry.provider).toBeTruthy();
     expect(telemetry.replanTool).toBe(REPLAN_TOOLS.RETRY_RETRIEVAL);
+    expect(telemetry.route).toBe(QUERY_ROUTES.LOCAL_RAG);
+  });
+
+  it("pickQueryLogFields keeps route, intent, and replan for DB insert", () => {
+    const row = pickQueryLogFields({
+      question: "test?",
+      queryMode: "core",
+      route: QUERY_ROUTES.HYBRID_WEB_FALLBACK,
+      intentLabel: "career_advice",
+      replanTool: REPLAN_TOOLS.HYBRID_WEB,
+      totalDurationMs: 100,
+      modelsUsed: { synthesis: "x", analysis: "y", embedding: "z" },
+    });
+    expect(row.route).toBe(QUERY_ROUTES.HYBRID_WEB_FALLBACK);
+    expect(row.intentLabel).toBe("career_advice");
+    expect(row.replanTool).toBe(REPLAN_TOOLS.HYBRID_WEB);
   });
 
   it("preserves hybrid fallback telemetry from performUncertaintyFallback", () => {

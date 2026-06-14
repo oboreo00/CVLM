@@ -1,8 +1,10 @@
 /**
- * Single-step replan gate for uncertain local RAG answers.
+ * Replan gate — single decision tree for query routing after retrieval.
  *
- * Heuristics + upstream LLM intent pick a recovery tool without a second router LLM in most cases.
- * chooseReplanTool runs only in the relevance gray zone when intent is uncertain.
+ *   if needsWeb        → hybrid_web
+ *   else if lowRelevance → hybrid_web | retry_retrieval (by intent)
+ *   else if local failed → hybrid_web | retry_retrieval (by intent)
+ *   else               → local_rag
  */
 
 import {
@@ -13,27 +15,26 @@ import {
 } from "@shared/queryRoutes";
 import type { QueryIntentLabel } from "./queryIntentClassifier.ts";
 import { performance } from "perf_hooks";
-import { getAnswer, isUncertainAnswer, withGeminiRetries } from "./geminiClient.ts";
+import { getAnswer, isContextBoundAnswer, isUncertainAnswer, withGeminiRetries } from "./geminiClient.ts";
 import { AI_MODELS } from "./aiConfig.ts";
 import {
   formatLocalContext,
   buildLocalRagPrompt,
   performUncertaintyFallback,
-  suggestQuestionBreakdown,
 } from "./queryAnalyzer.ts";
 
-export type ReplanTrigger = "uncertain_local_answer" | "borderline_relevance";
+export type ReplanTrigger =
+  | "needs_web_intent"
+  | "low_relevance"
+  | "uncertain_local_answer";
+
+/** Matches legacy WEB_FALLBACK_SIMILARITY — retrieval quality cutoff. */
+export const LOW_RELEVANCE_THRESHOLD = 0.1;
 
 /** Set REPLAN_GATE_ENABLED=false to skip the gate and use legacy hybrid_web fallback. */
 export function isReplanGateEnabled(): boolean {
   return process.env.REPLAN_GATE_ENABLED !== "false";
 }
-
-/** Gray zone above WEB_FALLBACK_SIMILARITY (0.1) where routing is ambiguous. */
-export const REPLAN_BORDERLINE_RELEVANCE = { min: 0.1, max: 0.35 } as const;
-
-/** Min confidence from classifyQueryIntent (LLM) to drive replan tool directly. */
-export const INTENT_REPLAN_CONFIDENCE = 0.75;
 
 export interface ReplanGateInput {
   question: string;
@@ -47,13 +48,14 @@ export interface ReplanGateInput {
   intentLabel?: QueryIntentLabel;
   intentConfidence?: number;
   intentSource?: "llm" | "heuristic" | "guardrail";
+  needsWeb?: boolean;
 }
 
 export interface ReplanGateDecision {
   tool: ReplanTool;
   reason: string;
   confidence: number;
-  source?: "heuristic" | "llm" | "guardrail" | "intent";
+  source?: "heuristic" | "intent";
 }
 
 export interface ReplanStructure {
@@ -78,267 +80,78 @@ export interface ReplanExecutionParams {
   embedQuestion: (question: string) => Promise<number[]>;
 }
 
-const VALID_TOOLS = new Set<ReplanTool>(Object.values(REPLAN_TOOLS));
+export function isLowRelevance(
+  input: Pick<ReplanGateInput, "relevanceScore" | "hasLocalChunks">,
+): boolean {
+  return !input.hasLocalChunks || input.relevanceScore < LOW_RELEVANCE_THRESHOLD;
+}
 
-const DEFAULT_DECISION: ReplanGateDecision = {
-  tool: REPLAN_TOOLS.HYBRID_WEB,
-  reason: "default_hybrid_fallback",
-  confidence: 0,
-  source: "heuristic",
-};
+function preferRetryRetrieval(input: ReplanGateInput): boolean {
+  return input.isSimpleFactualLookup || input.intentLabel === "factual_personal";
+}
 
-/**
- * Deterministic routing — skips the router LLM when intent/relevance is clear.
- * Returns null only in the gray zone (needs chooseReplanTool).
- */
-export function resolveReplanHeuristic(input: ReplanGateInput): ReplanGateDecision | null {
-  if (!input.hasLocalChunks) {
+function recoveryByIntent(
+  input: ReplanGateInput,
+  confidence: number,
+  reasonPrefix: string,
+): ReplanGateDecision {
+  if (input.intentLabel === "off_domain") {
     return {
       tool: REPLAN_TOOLS.HYBRID_WEB,
-      reason: "no_local_chunks",
-      confidence: 1,
-      source: "heuristic",
+      reason: `${reasonPrefix}_off_domain`,
+      confidence,
+      source: "intent",
     };
   }
-
-  if (input.isSimpleFactualLookup) {
+  if (preferRetryRetrieval(input)) {
     return {
       tool: REPLAN_TOOLS.RETRY_RETRIEVAL,
-      reason: "simple_factual",
-      confidence: 0.95,
+      reason: `${reasonPrefix}_retry`,
+      confidence,
       source: "heuristic",
     };
   }
-
-  if (input.isAdviceQuestion || input.isComplex) {
-    if (input.relevanceScore < REPLAN_BORDERLINE_RELEVANCE.min) {
-      return {
-        tool: REPLAN_TOOLS.HYBRID_WEB,
-        reason: "advice_low_relevance",
-        confidence: 0.9,
-        source: "heuristic",
-      };
-    }
-    return {
-      tool: REPLAN_TOOLS.SUGGEST_BREAKDOWN,
-      reason: "advice_or_complex",
-      confidence: 0.85,
-      source: "heuristic",
-    };
-  }
-
-  if (input.relevanceScore < REPLAN_BORDERLINE_RELEVANCE.min) {
-    return {
-      tool: REPLAN_TOOLS.HYBRID_WEB,
-      reason: "low_relevance",
-      confidence: 0.85,
-      source: "heuristic",
-    };
-  }
-
-  if (input.relevanceScore >= REPLAN_BORDERLINE_RELEVANCE.max) {
-    return {
-      tool: REPLAN_TOOLS.RETRY_RETRIEVAL,
-      reason: "decent_relevance_retry",
-      confidence: 0.8,
-      source: "heuristic",
-    };
-  }
-
-  return null;
+  return {
+    tool: REPLAN_TOOLS.HYBRID_WEB,
+    reason: `${reasonPrefix}_hybrid`,
+    confidence,
+    source: "heuristic",
+  };
 }
 
 /**
- * Maps high-confidence upstream intent (classifyQueryIntent) to a replan tool.
- * Skips chooseReplanTool when the query was already understood at the start.
+ * Core routing tree. Sync and deterministic — no router LLM.
  */
-export function replanToolFromIntent(input: ReplanGateInput): ReplanGateDecision | null {
-  if (input.intentSource !== "llm") return null;
-  if ((input.intentConfidence ?? 0) < INTENT_REPLAN_CONFIDENCE) return null;
-  if (!input.intentLabel) return null;
+export function decideReplanTool(input: ReplanGateInput): ReplanGateDecision {
+  const confidence = input.intentConfidence ?? 0.85;
 
-  if (!input.hasLocalChunks) {
+  if (input.needsWeb) {
     return {
       tool: REPLAN_TOOLS.HYBRID_WEB,
-      reason: "intent_no_local_chunks",
-      confidence: input.intentConfidence ?? 0.8,
+      reason:
+        input.trigger === "needs_web_intent" ? "needs_web_skip_local" : "needs_web",
+      confidence,
       source: "intent",
     };
   }
 
-  const lowRelevance = input.relevanceScore < REPLAN_BORDERLINE_RELEVANCE.min;
-
-  switch (input.intentLabel) {
-    case "factual_personal":
-      return {
-        tool: lowRelevance ? REPLAN_TOOLS.HYBRID_WEB : REPLAN_TOOLS.RETRY_RETRIEVAL,
-        reason: lowRelevance ? "intent_factual_low_relevance" : "intent_factual_personal",
-        confidence: input.intentConfidence ?? 0.8,
-        source: "intent",
-      };
-    case "career_advice":
-      return {
-        tool: lowRelevance ? REPLAN_TOOLS.HYBRID_WEB : REPLAN_TOOLS.SUGGEST_BREAKDOWN,
-        reason: lowRelevance ? "intent_advice_low_relevance" : "intent_career_advice",
-        confidence: input.intentConfidence ?? 0.8,
-        source: "intent",
-      };
-    case "multi_part":
-      return {
-        tool: REPLAN_TOOLS.SUGGEST_BREAKDOWN,
-        reason: "intent_multi_part",
-        confidence: input.intentConfidence ?? 0.8,
-        source: "intent",
-      };
-    case "off_domain":
-      return {
-        tool: REPLAN_TOOLS.HYBRID_WEB,
-        reason: "intent_off_domain",
-        confidence: input.intentConfidence ?? 0.8,
-        source: "intent",
-      };
-    default:
-      return null;
-  }
-}
-
-/** Clamp LLM/heuristic choices that waste tokens or violate intent. */
-export function applyReplanGuardrails(
-  decision: ReplanGateDecision,
-  input: ReplanGateInput,
-): ReplanGateDecision {
-  let tool = decision.tool;
-  let reason = decision.reason;
-
-  if (input.isAdviceQuestion || input.isComplex) {
-    if (tool === REPLAN_TOOLS.LOCAL_RAG || tool === REPLAN_TOOLS.RETRY_RETRIEVAL) {
-      tool =
-        input.relevanceScore < REPLAN_BORDERLINE_RELEVANCE.min
-          ? REPLAN_TOOLS.HYBRID_WEB
-          : REPLAN_TOOLS.SUGGEST_BREAKDOWN;
-      reason = `guardrail_${decision.tool}_to_${tool}`;
-    }
-  }
-
-  if (input.isSimpleFactualLookup && tool !== REPLAN_TOOLS.RETRY_RETRIEVAL) {
-    tool = REPLAN_TOOLS.RETRY_RETRIEVAL;
-    reason = `guardrail_${decision.tool}_to_retry_retrieval`;
-  }
-
-  if (!input.hasLocalChunks && (tool === REPLAN_TOOLS.LOCAL_RAG || tool === REPLAN_TOOLS.RETRY_RETRIEVAL)) {
-    tool = REPLAN_TOOLS.HYBRID_WEB;
-    reason = `guardrail_${decision.tool}_no_chunks`;
+  if (isLowRelevance(input)) {
+    return recoveryByIntent(input, confidence, "low_relevance");
   }
 
   if (
-    input.relevanceScore < REPLAN_BORDERLINE_RELEVANCE.min &&
-    (tool === REPLAN_TOOLS.LOCAL_RAG || tool === REPLAN_TOOLS.RETRY_RETRIEVAL)
+    input.trigger === "uncertain_local_answer" &&
+    (isUncertainAnswer(input.localAnswer) || isContextBoundAnswer(input.localAnswer))
   ) {
-    tool = REPLAN_TOOLS.HYBRID_WEB;
-    reason = `guardrail_${decision.tool}_low_relevance`;
+    return recoveryByIntent(input, confidence, "uncertain_local");
   }
 
-  if (tool === decision.tool) return decision;
-  return { tool, reason, confidence: decision.confidence, source: "guardrail" };
-}
-
-export async function decideReplanTool(
-  ai: any,
-  input: ReplanGateInput,
-): Promise<ReplanGateDecision> {
-  const fromIntent = replanToolFromIntent(input);
-  if (fromIntent) {
-    const guarded = applyReplanGuardrails(fromIntent, input);
-    console.log("[ReplanGate] intent", guarded);
-    return guarded;
-  }
-
-  const heuristic = resolveReplanHeuristic(input);
-  if (heuristic) {
-    const guarded = applyReplanGuardrails(heuristic, input);
-    console.log("[ReplanGate] heuristic", guarded);
-    return guarded;
-  }
-
-  const llm = await chooseReplanTool(ai, input);
-  const guarded = applyReplanGuardrails({ ...llm, source: "llm" }, input);
-  console.log("[ReplanGate] llm", guarded);
-  return guarded;
-}
-
-export function shouldInvokeReplanGate(input: ReplanGateInput): boolean {
-  if (!isReplanGateEnabled()) return false;
-
-  if (input.trigger === "uncertain_local_answer") return true;
-
-  if (input.trigger === "borderline_relevance") {
-    return (
-      input.relevanceScore >= REPLAN_BORDERLINE_RELEVANCE.min &&
-      input.relevanceScore < REPLAN_BORDERLINE_RELEVANCE.max &&
-      !input.isSimpleFactualLookup &&
-      input.hasLocalChunks
-    );
-  }
-
-  return false;
-}
-
-export function parseReplanToolResponse(text: string): ReplanGateDecision | null {
-  const cleaned = text.replace(/```json|```/g, "").trim();
-  try {
-    const parsed = JSON.parse(cleaned) as {
-      tool?: string;
-      reason?: string;
-      confidence?: number;
-    };
-    if (!parsed.tool || !VALID_TOOLS.has(parsed.tool as ReplanTool)) return null;
-    return {
-      tool: parsed.tool as ReplanTool,
-      reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 240) : "model_choice",
-      confidence:
-        typeof parsed.confidence === "number"
-          ? Math.min(1, Math.max(0, parsed.confidence))
-          : 0.5,
-    };
-  } catch {
-    return null;
-  }
-}
-
-export async function chooseReplanTool(
-  ai: any,
-  input: ReplanGateInput,
-): Promise<ReplanGateDecision> {
-  const prompt = `Pick ONE recovery tool for an uncertain resume RAG answer. Gray-zone only.
-
-Tools: ${Object.values(REPLAN_TOOLS).join(" | ")}
-relevance=${input.relevanceScore.toFixed(2)} advice=${input.isAdviceQuestion} complex=${input.isComplex} factual=${input.isSimpleFactualLookup}
-Q: ${input.question}
-
-JSON only: {"tool":"...","reason":"...","confidence":0.0-1.0}`;
-
-  try {
-    const response = (await withGeminiRetries("replanGate", () =>
-      ai.models.generateContent({
-        model: AI_MODELS.FAST_WORKHORSE,
-        contents: prompt,
-      }),
-    )) as { text?: string; candidates?: { content?: { parts?: { text?: string }[] } }[] };
-
-    const text =
-      response.text ||
-      response.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "";
-    const decision = parseReplanToolResponse(text);
-    if (decision) {
-      console.log("[ReplanGate] chose tool", decision);
-      return decision;
-    }
-  } catch (err) {
-    console.error("[ReplanGate] tool choice failed:", err);
-  }
-
-  return DEFAULT_DECISION;
+  return {
+    tool: REPLAN_TOOLS.LOCAL_RAG,
+    reason: "local_sufficient",
+    confidence,
+    source: "heuristic",
+  };
 }
 
 function attachReplanMeta(
@@ -374,9 +187,7 @@ Question: ${question}`;
   }
 }
 
-/**
- * Runs the chosen replan tool once. Caller merges stepDurations into query telemetry.
- */
+/** Runs the chosen replan tool once. Caller merges stepDurations into query telemetry. */
 export async function executeReplanTool(
   params: ReplanExecutionParams,
 ): Promise<{ body: Record<string, unknown>; stepDurations: Record<string, number> }> {
@@ -414,52 +225,6 @@ export async function executeReplanTool(
     };
   }
 
-  if (decision.tool === REPLAN_TOOLS.SUGGEST_BREAKDOWN) {
-    if (structure.estimatedSubQuestions <= 1) {
-      return {
-        body: attachReplanMeta(
-          {
-            answer: localAnswer,
-            sources: localResults.map(
-              (r) => (r.content?.substring(0, 80) ?? "") + "...",
-            ),
-            uncertainty: true,
-            isAdviceQuestion: structure.isAdviceQuestion,
-          },
-          decision,
-          QUERY_ROUTES.LOCAL_RAG,
-        ),
-        stepDurations,
-      };
-    }
-
-    const start = performance.now();
-    const breakdown = await suggestQuestionBreakdown(ai, question, structure as any);
-    stepDurations.breakdown = Math.round(performance.now() - start);
-
-    return {
-      body: attachReplanMeta(
-        {
-          answer: localAnswer,
-          sources: [],
-          uncertainty: true,
-          isAdviceQuestion: structure.isAdviceQuestion,
-          suggestedQuestions:
-            breakdown.questions.length > 0 ? breakdown.questions : undefined,
-          hint:
-            breakdown.questions.length > 0
-              ? structure.isAdviceQuestion
-                ? "This looks like a career-guidance question. Try these focused angles:"
-                : "Try these simpler questions instead:"
-              : undefined,
-        },
-        decision,
-        QUERY_ROUTES.SUGGEST_BREAKDOWN,
-      ),
-      stepDurations,
-    };
-  }
-
   if (decision.tool === REPLAN_TOOLS.RETRY_RETRIEVAL) {
     const retryStart = performance.now();
     const rephrased = structure.isSimpleFactualLookup
@@ -476,7 +241,7 @@ export async function executeReplanTool(
       const { text: retryAnswer } = await getAnswer(ai, retryPrompt);
       stepDurations.retrySynthesis = Math.round(performance.now() - synthStart);
 
-      if (!isUncertainAnswer(retryAnswer)) {
+      if (!isUncertainAnswer(retryAnswer) && !isContextBoundAnswer(retryAnswer)) {
         return {
           body: attachReplanMeta(
             {
@@ -495,36 +260,18 @@ export async function executeReplanTool(
       }
     }
 
-    if (structure.isAdviceQuestion || structure.isComplex || structure.isSimpleFactualLookup) {
-      const fallback = await performUncertaintyFallback(
-        ai,
-        question,
-        localResults,
-        relevanceScore,
-        structure as any,
-        embeddingCacheHit,
-        queryMode,
-        sessionId,
-      );
-      return {
-        body: attachReplanMeta(fallback, decision, QUERY_ROUTES.HYBRID_WEB_FALLBACK),
-        stepDurations,
-      };
-    }
-
+    const fallback = await performUncertaintyFallback(
+      ai,
+      question,
+      localResults,
+      relevanceScore,
+      structure as any,
+      embeddingCacheHit,
+      queryMode,
+      sessionId,
+    );
     return {
-      body: attachReplanMeta(
-        {
-          answer: localAnswer,
-          sources: localResults.map(
-            (r) => (r.content?.substring(0, 80) ?? "") + "...",
-          ),
-          uncertainty: true,
-          isAdviceQuestion: structure.isAdviceQuestion,
-        },
-        decision,
-        QUERY_ROUTES.LOCAL_RAG,
-      ),
+      body: attachReplanMeta(fallback, decision, QUERY_ROUTES.HYBRID_WEB_FALLBACK),
       stepDurations,
     };
   }
