@@ -4,6 +4,8 @@ import { documents, queryLogs, type InsertDocument, type Document } from "@share
 import { pickQueryLogFields } from "./services/queryTelemetry";
 import { DOC_TYPES, type PrepStatus } from "@shared/resumeTypes";
 
+type QueryLog = Parameters<typeof pickQueryLogFields>[0];
+
 export interface IStorage {
   createDocument(doc: InsertDocument): Promise<Document>;
   getDocuments(): Promise<Document[]>;
@@ -19,7 +21,7 @@ export interface IStorage {
     prepId: string,
     error?: string,
   ): Promise<void>;
-  insertQueryLog(log: any): Promise<void>;
+  insertQueryLog(log: QueryLog): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -99,9 +101,9 @@ export class DatabaseStorage implements IStorage {
     });
   }
 
-  async insertQueryLog(log: Record<string, unknown>): Promise<void> {
+  async insertQueryLog(log: QueryLog): Promise<void> {
     await db.insert(queryLogs).values(
-      pickQueryLogFields(log as Parameters<typeof pickQueryLogFields>[0]),
+      pickQueryLogFields(log),
     );
   }
 }
