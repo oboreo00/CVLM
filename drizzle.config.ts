@@ -11,4 +11,5 @@ export default defineConfig({
   dbCredentials: {
     url: process.env.DATABASE_URL,
   },
+  // Use `npm run db:generate` after schema changes; `npm run db:migrate` to apply.
 });

@@ -5,11 +5,13 @@
   "license": "MIT",
   "scripts": {
     "dev": "NODE_ENV=development tsx --env-file=.env server/index.ts",
-    "build": "tsx script/build.ts && npm run db:push",
+    "build": "tsx script/build.ts && npm run db:migrate",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "test:security": "tsx tests/security.test.ts"
   },

@@ -24,7 +24,9 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import About from "@/components/About";
 import AboutButton from "@/components/AboutButton";
+import QueryStatsPanel from "@/components/QueryStatsPanel";
 import { AnswerMarkdown } from "@/components/AnswerMarkdown";
+import { fetchRecentQueryLogs, type QueryLogStatRow } from "@/lib/queryLogs";
 import "./home.css";
 
 export default function Home() {
@@ -48,8 +50,26 @@ export default function Home() {
   const [chunkIndex, setChunkIndex] = useState<{ count: number; sections: string[] } | null>(null);
   const [prepStreamNonce, setPrepStreamNonce] = useState(0);
   const prepSyncGenRef = useRef(0);
+  const [showStats, setShowStats] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(false);
+  const [statsError, setStatsError] = useState<string | null>(null);
+  const [statsRows, setStatsRows] = useState<QueryLogStatRow[]>([]);
 
   const { toast } = useToast();
+
+  const loadQueryStats = useCallback(async () => {
+    setStatsLoading(true);
+    setStatsError(null);
+    try {
+      setStatsRows(await fetchRecentQueryLogs(3));
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Failed to load query stats";
+      setStatsError(message);
+      setStatsRows([]);
+    } finally {
+      setStatsLoading(false);
+    }
+  }, []);
 
   const applyPrepPayload = useCallback((data: PrepStatusPayload | null) => {
     const next = prepDisplayFromPayload(data);
@@ -218,11 +238,23 @@ export default function Home() {
       setSources(data.sources ?? []);
       setSuggestedQuestions(data.suggestedQuestions ?? []);
       setHint(data.hint ?? null);
+      if (showStats) {
+        void loadQueryStats();
+      }
     } catch (e: any) {
       setError(e.message ?? "Failed to query documents");
     } finally {
       setLoadingQuery(false);
     }
+  }
+
+  function handleToggleStats() {
+    if (showStats) {
+      setShowStats(false);
+      return;
+    }
+    setShowStats(true);
+    void loadQueryStats();
   }
 
   function handleSuggestedQuestion(suggestedQ: string) {
@@ -424,6 +456,24 @@ export default function Home() {
               </div>
             </div>
           )}
+
+          <div className="rag-stats-section">
+            <button
+              type="button"
+              className="rag-stats-toggle"
+              onClick={handleToggleStats}
+              aria-expanded={showStats}
+            >
+              {showStats ? "▲ Hide Stats" : "▼ Show Stats"}
+            </button>
+            {showStats && (
+              <QueryStatsPanel
+                rows={statsRows}
+                loading={statsLoading}
+                error={statsError}
+              />
+            )}
+          </div>
 
           <p className="rag-footer-note">Query text and usage metadata (model, token, cache status) are logged for performance monitoring</p>
         </div>

@@ -86,11 +86,25 @@ REPLAN_GATE_ENABLED=true       # Single-step replan on uncertain local answers; 
    npx supabase start
    ```
 
-3. **Set up the database schema:**
+3. **Apply database migrations:**
    ```bash
-   npm run db:push
+   npm run db:migrate
    ```
-   This command will create the necessary tables in your PostgreSQL database using Drizzle ORM.
+   Creates tables, enables RLS, and applies policies from `migrations/` (generated from `shared/schema.ts`).
+
+## Database schema changes
+
+Schema lives in `shared/schema.ts`. When you change it:
+
+1. **Generate** a migration (dev only):
+   ```bash
+   npm run db:generate -- --name describe_your_change
+   ```
+2. **Review** the new SQL under `migrations/`, then commit it.
+3. **Apply** locally: `npm run db:migrate`
+4. **Deploy:** `npm run build` runs `db:migrate` automatically when `DATABASE_URL` is set (same as Railway today). Only pending migrations run; no manual prod step unless you deploy outside that pipeline.
+
+Do **not** use `npm run db:push` for prod — it can create RLS policies without `USING`/`WITH CHECK` clauses. `db:push` remains available for quick local experiments only.
 
 ## Running the Application
 
@@ -108,7 +122,7 @@ The server will start on port 5000 (or the port specified in your `PORT` environ
 
 ### Production Mode
 
-1. **Build the application:**
+1. **Build the application** (bundles client/server and applies pending DB migrations when `DATABASE_URL` is set):
    ```bash
    npm run build
    ```

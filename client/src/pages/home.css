@@ -726,10 +726,96 @@
 }
 
 .rag-footer-note {
-  margin-top: 2rem;
+  margin-top: 1rem;
   font-size: 0.65rem;
   color: #43674c;
   text-align: center;
   font-weight: 300;
   letter-spacing: 0.02em;
+}
+
+.rag-stats-section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid rgba(122, 179, 138, 0.1);
+}
+
+.rag-stats-toggle {
+  display: block;
+  margin: 0 auto;
+  background: none;
+  border: none;
+  color: #63a975;
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  transition: color 0.2s;
+}
+
+.rag-stats-toggle:hover {
+  color: #86c598;
+}
+
+.rag-stats-message {
+  margin: 1rem 0 0;
+  font-size: 0.68rem;
+  color: #51795a;
+  text-align: center;
+}
+
+.rag-stats-message--error {
+  color: #c97a7a;
+}
+
+.rag-stats-table-wrap {
+  margin-top: 1rem;
+  overflow-x: auto;
+}
+
+.rag-stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.68rem;
+  font-weight: 300;
+}
+
+.rag-stats-table th {
+  text-align: left;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #51795a;
+  padding: 0.35rem 0.5rem 0.5rem 0;
+  border-bottom: 1px solid rgba(122, 179, 138, 0.15);
+  white-space: nowrap;
+}
+
+.rag-stats-table td {
+  padding: 0.45rem 0.5rem 0.45rem 0;
+  color: #b9d8bd;
+  border-bottom: 1px solid rgba(122, 179, 138, 0.08);
+  vertical-align: top;
+}
+
+.rag-stats-query {
+  max-width: 12rem;
+  word-break: break-word;
+  color: #cae9cf;
+}
+
+.rag-stats-num {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.62rem;
+  white-space: nowrap;
+}
+
+.rag-stats-model {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.58rem;
+  color: #86c598;
+  max-width: 8rem;
+  word-break: break-all;
 }

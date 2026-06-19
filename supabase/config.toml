@@ -51,9 +51,8 @@ max_client_conn = 100
 # secret_key = "env(SECRET_VALUE)"
 
 [db.migrations]
-# Schema is created by Drizzle (`npm run db:push` from shared/schema.ts).
-# SQL files under supabase/migrations/ only ALTER existing tables; on a fresh DB they fail.
-# Run `npm run db:push` after `supabase start`, or apply those SQL files manually on hosted DB if needed.
+# Schema is managed by Drizzle (`shared/schema.ts` → `migrations/` → `npm run db:migrate`).
+# SQL files under supabase/migrations/ are legacy; do not enable unless you migrate off Drizzle.
 enabled = false
 # Specifies an ordered list of schema files that describe your database.
 # Supports glob patterns relative to supabase directory: "./schemas/*.sql"
