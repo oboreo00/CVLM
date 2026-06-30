@@ -11,6 +11,7 @@ import { DOC_TYPES } from "@shared/resumeTypes";
 import { isCorePrepReady } from "@shared/documentFilters";
 import { storage } from "../storage";
 import { runCorePrepForSource, type EmbedFn } from "./prepBot";
+import type { LLMAdapter } from "./llmAdapter.ts";
 
 export interface VectorDoc {
   id: number;
@@ -80,7 +81,7 @@ export async function cleanupExpiredSessions(): Promise<void> {
  * Runs prep bot when content hash changes (manifest + chunks in DB).
  */
 export async function syncDocsFromDiskAndReloadVectorStore(
-  ai: unknown,
+  ai: LLMAdapter,
   getEmbedding: EmbedFn,
 ): Promise<void> {
   const docsDir = path.join(process.cwd(), "knowledge");

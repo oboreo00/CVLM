@@ -15,6 +15,7 @@ import {
 } from "@shared/queryIntent";
 import { withGeminiRetries } from "./geminiClient.ts";
 import { AI_MODELS } from "./aiConfig.ts";
+import type { LLMAdapter } from "./llmAdapter.ts";
 
 export type { IntentLabel, RecoveryHint } from "@shared/queryIntent";
 
@@ -280,7 +281,7 @@ function mergeIntent(
 }
 
 async function classifyQueryIntentWithLlm(
-  ai: any,
+  ai: LLMAdapter,
   question: string,
 ): Promise<Partial<QuestionStructure> | null> {
   const recoveryHintValues = Object.values(RECOVERY_HINTS).join(" | ");
@@ -317,7 +318,7 @@ Q: ${question}
 
 /** Primary entry: LLM intent when enabled, heuristic fallback, then guardrails. */
 export async function classifyQueryIntent(
-  ai: any,
+  ai: LLMAdapter,
   question: string,
 ): Promise<QuestionStructure> {
   const heuristic = heuristicQuestionStructure(question);

@@ -1,4 +1,13 @@
 import { GoogleGenAI } from "@google/genai";
+import type {
+  EmbedContentOptions,
+  EmbedContentResult,
+  GenerateContentOptions,
+  GenerateContentResult,
+  LLMAdapter,
+  LLMModels,
+} from "./llmAdapter.ts";
+import { toSdkEmbedRequest, toSdkGenerateRequest } from "./geminiSdkBridge.ts";
 
 export interface GeminiConfig {
   useVertex: boolean;
@@ -7,30 +16,12 @@ export interface GeminiConfig {
   location?: string;     // For Vertex AI (e.g., 'us-central1')
 }
 
-export class GeminiAdapter {
+export class GeminiAdapter implements LLMAdapter {
   private client: GoogleGenAI;
   private aiStudioClient?: GoogleGenAI; // Used for 3072-dim embeddings in Hybrid mode
   private useVertex: boolean;
 
-  public models: {
-    generateContent: (options: {
-      model: string;
-      contents: any;
-      config?: {
-        tools?: any[];
-        [key: string]: any;
-      };
-    }) => Promise<any>;
-    embedContent: (options: {
-      model: string;
-      contents: any;
-      config?: {
-        taskType?: string;
-        [key: string]: any;
-      };
-    }) => Promise<any>;
-    list: () => Promise<any>;
-  };
+  public models: LLMModels;
 
   constructor(config: GeminiConfig) {
     this.useVertex = config.useVertex;
@@ -58,7 +49,6 @@ export class GeminiAdapter {
       this.aiStudioClient = this.client;
     }
 
-    // Bind methods to the models property to act as a drop-in replacement for GoogleGenAI SDK structure
     this.models = {
       generateContent: this.generateContent.bind(this),
       embedContent: this.embedContent.bind(this),
@@ -68,91 +58,61 @@ export class GeminiAdapter {
     };
   }
 
-  /**
-   * Unified generate content method that standardizes the response object and maps models
-   */
-  async generateContent(options: {
-    model: string;
-    contents: any;
-    config?: {
-      tools?: any[];
-      [key: string]: any;
-    };
-  }): Promise<any> {
-    let modelName = options.model;
-
-    if (this.useVertex) {
-      // Map to standard Vertex AI production models (Gemini 2.5 is the production default in 2026)
-      const clean = modelName.replace(/^models\//, "");
-      if (clean.includes("lite")) {
-        modelName = "gemini-2.5-flash-lite";
-      } else if (clean.includes("flash")) {
-        modelName = "gemini-2.5-flash";
-      } else if (clean.includes("pro")) {
-        modelName = "gemini-2.5-pro";
-      } else {
-        modelName = clean; // allow specific models to pass through
-      }
-      console.log(`[Adapter] Vertex AI generateContent using model: ${modelName} (original: ${options.model})`);
-    } else {
-      // Ensure model name has "models/" prefix if not already present (AI Studio requires it)
-      if (!modelName.startsWith("models/") && !modelName.startsWith("tunedModels/")) {
-        modelName = `models/${modelName}`;
-      }
-    }
-
-    return await this.client.models.generateContent({
-      model: modelName,
-      contents: options.contents,
-      config: options.config,
-    });
+  async generateContent(options: GenerateContentOptions): Promise<GenerateContentResult> {
+    const modelName = this.resolveGenerateModelName(options.model);
+    const response = await this.client.models.generateContent(
+      toSdkGenerateRequest(modelName, options),
+    );
+    return response as GenerateContentResult;
   }
 
-  /**
-   * Unified embed content method that maps embedding models and safeguards dimension output
-   */
-  async embedContent(options: {
-    model: string;
-    contents: any;
-    config?: {
-      taskType?: string;
-      [key: string]: any;
-    };
-  }): Promise<any> {
-    // If Vertex is active, but we have an AI Studio client, route the embedding call to AI Studio.
-    // This is because Vertex AI's text-embedding models (004/005) only support a maximum of 768 dimensions,
-    // which causes pgvector insertion to fail since your database schema strictly expects 3072 dimensions.
+  async embedContent(options: EmbedContentOptions): Promise<EmbedContentResult> {
+    // Vertex text embeddings cap at 768 dims; route to AI Studio when hybrid client exists.
     if (this.useVertex && this.aiStudioClient) {
       console.log(`[Adapter] Hybrid Routing: Routing embedding call to AI Studio (${options.model}) to preserve 3072-dim DB schema`);
-      let modelName = options.model;
-      if (!modelName.startsWith("models/")) {
-        modelName = `models/${modelName}`;
-      }
-      return await this.aiStudioClient.models.embedContent({
-        model: modelName,
-        contents: options.contents,
-        config: options.config,
-      });
+      const modelName = this.withModelsPrefix(options.model);
+      const response = await this.aiStudioClient.models.embedContent(
+        toSdkEmbedRequest(modelName, options),
+      );
+      return response as EmbedContentResult;
     }
 
-    // Fallback: execute on the primary client
-    let modelName = options.model;
-    if (this.useVertex) {
-      modelName = modelName.replace(/^models\//, "");
-      console.log(`[Adapter] Vertex AI embedContent using model: ${modelName}`);
-    } else {
-      if (!modelName.startsWith("models/")) {
-        modelName = `models/${modelName}`;
-      }
-    }
-
-    return await this.client.models.embedContent({
-      model: modelName,
-      contents: options.contents,
-      config: {
+    const modelName = this.resolveEmbedModelName(options.model);
+    const response = await this.client.models.embedContent(
+      toSdkEmbedRequest(modelName, options, {
         ...options.config,
-        outputDimensionality: 3072 // Force 3072 dimensions if supported
-      }
-    });
+        outputDimensionality: 3072,
+      }),
+    );
+    return response as EmbedContentResult;
+  }
+
+  private resolveGenerateModelName(model: string): string {
+    if (this.useVertex) {
+      const clean = model.replace(/^models\//, "");
+      let mapped = clean;
+      if (clean.includes("lite")) mapped = "gemini-2.5-flash-lite";
+      else if (clean.includes("flash")) mapped = "gemini-2.5-flash";
+      else if (clean.includes("pro")) mapped = "gemini-2.5-pro";
+      console.log(`[Adapter] Vertex AI generateContent using model: ${mapped} (original: ${model})`);
+      return mapped;
+    }
+    return this.withModelsPrefix(model);
+  }
+
+  private resolveEmbedModelName(model: string): string {
+    if (this.useVertex) {
+      const stripped = model.replace(/^models\//, "");
+      console.log(`[Adapter] Vertex AI embedContent using model: ${stripped}`);
+      return stripped;
+    }
+    return this.withModelsPrefix(model);
+  }
+
+  private withModelsPrefix(model: string): string {
+    if (model.startsWith("models/") || model.startsWith("tunedModels/")) {
+      return model;
+    }
+    return `models/${model}`;
   }
 }

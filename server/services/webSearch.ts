@@ -1,5 +1,6 @@
 import { withGeminiRetries } from "./geminiClient";
 import { AI_MODELS } from "./aiConfig";
+import type { LLMAdapter } from "./llmAdapter";
 
 export interface WebSearchItem {
   title: string;
@@ -13,7 +14,7 @@ export type WebSearchProvider = 'gemini' | 'anthropic';
  * Searches the web using the specified provider
  * Returns structured web results with title, snippet, and link
  */
-export async function searchWeb(ai: any, query: string, provider: WebSearchProvider = 'gemini'): Promise<WebSearchItem[]> {
+export async function searchWeb(ai: LLMAdapter, query: string, provider: WebSearchProvider = 'gemini'): Promise<WebSearchItem[]> {
   console.log("[RAG] searchWeb called", {
     queryPreview: query.slice(0, 80),
     provider,
@@ -28,7 +29,7 @@ export async function searchWeb(ai: any, query: string, provider: WebSearchProvi
   return [];
 }
 
-async function searchWebGemini(ai: any, query: string): Promise<WebSearchItem[]> {
+async function searchWebGemini(ai: LLMAdapter, query: string): Promise<WebSearchItem[]> {
   if (!ai) return [];
 
   // Use the verified model from our central config

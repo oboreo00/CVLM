@@ -9,6 +9,7 @@ import { AI_MODELS, AI_CONFIG } from "./aiConfig.ts";
 import { QUERY_ROUTES } from "@shared/queryRoutes";
 import { queryCache } from "./cacheService.ts";
 import { searchWeb } from "./webSearch.ts";
+import type { LLMAdapter } from "./llmAdapter.ts";
 
 import {
   heuristicQuestionStructure,
@@ -93,7 +94,7 @@ export function getQuestionRelevanceScore(
  * Returns suggested breakdown for multi-part questions
  */
 export async function suggestQuestionBreakdown(
-  ai: any,
+  ai: LLMAdapter,
   question: string,
   structure: QuestionStructure
 ): Promise<{ questions: string[], usage: any }> {
@@ -132,7 +133,7 @@ Question: ${question}`;
  * Extracts identity metadata (name, title) from resume text
  */
 export async function extractDocumentMetadata(
-  ai: any,
+  ai: LLMAdapter,
   text: string
 ): Promise<DocumentMetadata> {
   const prompt = `Analyze the following resume text and extract the individual's full name, professional title, and location. 
@@ -165,7 +166,7 @@ ${text.substring(0, 1000)}`;
  * Generates an optimized web search query by incorporating relevant local context.
  */
 export async function generateSearchQuery(
-  ai: any,
+  ai: LLMAdapter,
   question: string,
   localContext: string
 ): Promise<{ query: string, usage: any }> {
@@ -214,7 +215,7 @@ Current Date: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month:
  * Returns a response body suitable for returning to the client.
  */
 export async function performUncertaintyFallback(
-  ai: any,
+  ai: LLMAdapter,
   question: string,
   localResults: any[],
   relevanceScore: number,
