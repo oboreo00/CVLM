@@ -4,6 +4,7 @@
  */
 
 import { AI_MODELS } from "./aiConfig.ts";
+import type { LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -12,13 +13,17 @@ function sleep(ms: number): Promise<void> {
 /**
  * Standard wrapper for Gemini generation with retries and simplified return
  */
-export async function getAnswer(ai: any, prompt: string, model: string = AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0]): Promise<{ text: string, usage: any }> {
-  const response = (await withGeminiRetries(`getAnswer (${model})`, () =>
+export async function getAnswer(
+  ai: LLMAdapter,
+  prompt: string,
+  model: string = AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
+): Promise<{ text: string; usage: LLMUsageMetadata | undefined }> {
+  const response = await withGeminiRetries(`getAnswer (${model})`, () =>
     ai.models.generateContent({
       model: model,
       contents: prompt,
     }),
-  )) as any;
+  );
 
   // Use the SDK's .text getter which automatically concatenates all text parts
   const text = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "";

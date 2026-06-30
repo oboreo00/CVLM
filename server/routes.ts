@@ -3,6 +3,7 @@ import type { Express } from "express";
 import type { Server } from "http";
 import { api } from "@shared/routes";
 import { GeminiAdapter } from "./services/geminiAdapter";
+import type { LLMAdapter } from "./services/llmAdapter";
 import { storage } from "./storage";
 import { withGeminiRetries, getAnswer, isUncertainAnswer, isContextBoundAnswer, cosineSimilarity } from "./services/geminiClient";
 import {
@@ -45,7 +46,7 @@ import { getManifestPayload, type PrepStatusPayload } from "./services/prepPaylo
 const TOP_K_CHUNKS = 5;
 
 async function getEmbedding(
-  ai: GeminiAdapter,
+  ai: LLMAdapter,
   prompt: string,
   taskType: "RETRIEVAL_QUERY" | "RETRIEVAL_DOCUMENT" = "RETRIEVAL_QUERY",
 ): Promise<number[]> {
@@ -76,7 +77,7 @@ function rankChunksBySimilarity(
 }
 
 async function handleReplanGateRecovery(params: {
-  ai: GeminiAdapter;
+  ai: LLMAdapter;
   question: string;
   localAnswer: string;
   results: any[];

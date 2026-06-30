@@ -24,6 +24,7 @@ import {
   buildLocalRagPrompt,
   performUncertaintyFallback,
 } from "./queryAnalyzer.ts";
+import type { LLMAdapter } from "./llmAdapter.ts";
 import {
   QUERY_ROUTES,
   type QueryRoute,
@@ -72,7 +73,7 @@ export interface ReplanStructure {
 }
 
 export interface ReplanExecutionParams {
-  ai: any;
+  ai: LLMAdapter;
   question: string;
   localAnswer: string;
   localResults: any[];
@@ -220,7 +221,7 @@ function attachReplanMeta(
   };
 }
 
-async function rephraseForRetrieval(ai: any, question: string): Promise<string> {
+async function rephraseForRetrieval(ai: LLMAdapter, question: string): Promise<string> {
   const prompt = `Rephrase this resume question into a shorter semantic search query. Return ONLY the rephrased question, no quotes.
 
 Question: ${question}`;
