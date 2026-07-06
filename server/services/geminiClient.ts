@@ -5,10 +5,7 @@
 
 import { AI_MODELS } from "./aiConfig.ts";
 import type { LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { withLLMRetries } from "./llmRetries.ts";
 
 /**
  * Standard wrapper for Gemini generation with retries and simplified return
@@ -18,7 +15,7 @@ export async function getAnswer(
   prompt: string,
   model: string = AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
 ): Promise<{ text: string; usage: LLMUsageMetadata | undefined }> {
-  const response = await withGeminiRetries(`getAnswer (${model})`, () =>
+  const response = await withLLMRetries(`getAnswer (${model})`, () =>
     ai.models.generateContent({
       model: model,
       contents: prompt,
@@ -67,53 +64,6 @@ export function isContextBoundAnswer(answer: string): boolean {
     lower.includes("does not mention") ||
     lower.includes("doesn't mention")
   );
-}
-
-function isRetriableGeminiError(err: unknown): boolean {
-  const e = err as {
-    status?: number;
-    code?: number;
-    message?: string;
-    error?: { code?: number; status?: string };
-  };
-  const status = e?.status ?? e?.code ?? e?.error?.code;
-  const msg = String(e?.message ?? err ?? "");
-
-  // If it's a 429 but specifically a "Daily Quota" limit, do NOT retry.
-  // We've run out of gas for the day.
-  if (msg.includes("GenerateRequestsPerDay") || msg.includes("quota exceeded")) {
-    return false; 
-  }
-
-  if (status === 503 || status === 429) return true;
-  if (/503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|temporarily unavailable/i.test(msg))
-    return true;
-  return false;
-}
-
-export async function withGeminiRetries<T>(
-  label: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  let last: unknown;
-  const maxAttempts = 4;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      last = err;
-      if (attempt < maxAttempts && isRetriableGeminiError(err)) {
-        const delayMs = 250 * 2 ** (attempt - 1);
-        console.warn(
-          `[RAG] ${label} attempt ${attempt}/${maxAttempts} failed; retry in ${delayMs}ms`,
-        );
-        await sleep(delayMs);
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw last;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {

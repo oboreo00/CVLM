@@ -1,11 +1,25 @@
 import { AI_MODELS } from "./aiConfig.ts";
 import type { QueryRoute } from "@shared/queryRoutes";
+import {
+  JUDGE_RATIONALE_MAX_LEN,
+  type JudgeMode,
+  type JudgeVerdict,
+} from "@shared/judgeVerdict";
 
 export interface ReplanTelemetryDecision {
   tool: string;
   reason: string;
   confidence: number;
   source?: string;
+}
+
+/** Populated when an LLM answer judge runs (shadow or live). */
+export interface JudgeTelemetryDecision {
+  verdict: JudgeVerdict;
+  confidence: number;
+  rationale?: string;
+  mode?: JudgeMode;
+  disagreedWithHeuristic?: boolean;
 }
 
 export interface QueryTelemetryBase {
@@ -26,6 +40,40 @@ export interface QueryTelemetryBase {
   totalTokens?: number;
 }
 
+function truncateJudgeRationale(rationale: string | undefined): string | undefined {
+  if (rationale == null) return undefined;
+  const trimmed = rationale.trim();
+  if (trimmed.length <= JUDGE_RATIONALE_MAX_LEN) return trimmed;
+  return `${trimmed.slice(0, JUDGE_RATIONALE_MAX_LEN - 1)}…`;
+}
+
+function pickJudgeTelemetryFields(log: Record<string, unknown>) {
+  const judgeVerdict = log.judgeVerdict as string | undefined;
+  const judgeConfidence = log.judgeConfidence as number | undefined;
+  const judgeRationale = log.judgeRationale as string | undefined;
+  const judgeMode = log.judgeMode as string | undefined;
+  const judgeDisagreedWithHeuristic = log.judgeDisagreedWithHeuristic as boolean | undefined;
+
+  if (
+    judgeVerdict == null &&
+    judgeConfidence == null &&
+    judgeRationale == null &&
+    judgeMode == null &&
+    judgeDisagreedWithHeuristic == null
+  ) {
+    return {};
+  }
+
+  return {
+    judgeVerdict: judgeVerdict ?? null,
+    judgeConfidence:
+      judgeConfidence != null ? String(judgeConfidence) : null,
+    judgeRationale: judgeRationale ?? null,
+    judgeMode: judgeMode ?? null,
+    judgeDisagreedWithHeuristic: judgeDisagreedWithHeuristic ?? null,
+  };
+}
+
 /** Maps telemetry + request fields to query_logs row shape. */
 export function pickQueryLogFields(
   log: Record<string, unknown> & {
@@ -41,6 +89,7 @@ export function pickQueryLogFields(
     route: log.route as string | undefined,
     intentLabel: log.intentLabel as string | undefined,
     replanTool: (log.replanTool as string | undefined) ?? null,
+    replanReason: (log.replanReason as string | undefined) ?? null,
     totalDurationMs: log.totalDurationMs,
     relevanceScore:
       log.relevanceScore != null ? String(log.relevanceScore) : undefined,
@@ -51,6 +100,7 @@ export function pickQueryLogFields(
     completionTokens: log.completionTokens as number | undefined,
     totalTokens: log.totalTokens as number | undefined,
     provider: log.provider as string | undefined,
+    ...pickJudgeTelemetryFields(log),
   };
 }
 
@@ -60,6 +110,7 @@ export function buildQueryTelemetry(
   base: QueryTelemetryBase,
   bodyTelemetry?: Record<string, unknown>,
   replanDecision?: ReplanTelemetryDecision,
+  judgeDecision?: JudgeTelemetryDecision,
 ): Record<string, unknown> {
   const provider =
     (bodyTelemetry?.provider as string | undefined) ??
@@ -83,6 +134,25 @@ export function buildQueryTelemetry(
   const recoveryHint =
     (typeof bodyTelemetry?.recoveryHint === "string" ? bodyTelemetry.recoveryHint : undefined) ??
     base.recoveryHint;
+
+  const judgeVerdict =
+    judgeDecision?.verdict ??
+    (typeof bodyTelemetry?.judgeVerdict === "string" ? bodyTelemetry.judgeVerdict : undefined);
+  const judgeConfidence =
+    judgeDecision?.confidence ??
+    (typeof bodyTelemetry?.judgeConfidence === "number" ? bodyTelemetry.judgeConfidence : undefined);
+  const judgeRationale = truncateJudgeRationale(
+    judgeDecision?.rationale ??
+      (typeof bodyTelemetry?.judgeRationale === "string" ? bodyTelemetry.judgeRationale : undefined),
+  );
+  const judgeMode =
+    judgeDecision?.mode ??
+    (typeof bodyTelemetry?.judgeMode === "string" ? bodyTelemetry.judgeMode : undefined);
+  const judgeDisagreedWithHeuristic =
+    judgeDecision?.disagreedWithHeuristic ??
+    (typeof bodyTelemetry?.judgeDisagreedWithHeuristic === "boolean"
+      ? bodyTelemetry.judgeDisagreedWithHeuristic
+      : undefined);
 
   return {
     route,
@@ -118,5 +188,10 @@ export function buildQueryTelemetry(
     ...(intentSource ? { intentSource } : {}),
     ...(intentConfidence != null ? { intentConfidence } : {}),
     ...(recoveryHint ? { recoveryHint } : {}),
+    ...(judgeVerdict ? { judgeVerdict } : {}),
+    ...(judgeConfidence != null ? { judgeConfidence } : {}),
+    ...(judgeRationale ? { judgeRationale } : {}),
+    ...(judgeMode ? { judgeMode } : {}),
+    ...(judgeDisagreedWithHeuristic != null ? { judgeDisagreedWithHeuristic } : {}),
   };
 }
