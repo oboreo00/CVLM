@@ -1,4 +1,4 @@
-import { withGeminiRetries } from "./geminiClient";
+import { withLLMRetries } from "./llmRetries";
 import { AI_MODELS } from "./aiConfig";
 import type { LLMAdapter } from "./llmAdapter";
 
@@ -47,7 +47,7 @@ async function searchWebGemini(ai: LLMAdapter, query: string): Promise<WebSearch
     };
 
     // Apply the same retry logic as the rest of the app
-    const data = await withGeminiRetries(`Gemini Web Search (${model})`, fetchWithRetry);
+    const data = await withLLMRetries(`Gemini Web Search (${model})`, fetchWithRetry);
     
     if (!data || !data.candidates) return [];
     

@@ -4,7 +4,8 @@
  */
 
 import { performance } from "perf_hooks";
-import { withGeminiRetries, getAnswer, isUncertainAnswer } from "./geminiClient.ts";
+import { getAnswer, isUncertainAnswer } from "./geminiClient.ts";
+import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS, AI_CONFIG } from "./aiConfig.ts";
 import { QUERY_ROUTES } from "@shared/queryRoutes";
 import { queryCache } from "./cacheService.ts";
@@ -107,7 +108,7 @@ export async function suggestQuestionBreakdown(
 Question: ${question}`;
 
   try {
-    const response = (await withGeminiRetries("breakdownQuestion", () =>
+    const response = (await withLLMRetries("breakdownQuestion", () =>
       ai.models.generateContent({
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,
@@ -143,7 +144,7 @@ Resume Text (first 1000 chars):
 ${text.substring(0, 1000)}`;
 
   try {
-    const response = (await withGeminiRetries("extractMetadata", () =>
+    const response = (await withLLMRetries("extractMetadata", () =>
       ai.models.generateContent({
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,
@@ -190,7 +191,7 @@ ${question}
 Current Date: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}` ;
 
   try {
-    const response = (await withGeminiRetries("rewriteSearchQuery", () =>
+    const response = (await withLLMRetries("rewriteSearchQuery", () =>
       ai.models.generateContent({
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,

@@ -5,7 +5,8 @@ import { api } from "@shared/routes";
 import { GeminiAdapter } from "./services/geminiAdapter";
 import type { LLMAdapter } from "./services/llmAdapter";
 import { storage } from "./storage";
-import { withGeminiRetries, getAnswer, isUncertainAnswer, isContextBoundAnswer, cosineSimilarity } from "./services/geminiClient";
+import { getAnswer, isUncertainAnswer, isContextBoundAnswer, cosineSimilarity } from "./services/geminiClient";
+import { withLLMRetries } from "./services/llmRetries";
 import {
   performUncertaintyFallback,
   formatLocalContext,
@@ -24,7 +25,8 @@ import {
   type ReplanTrigger,
 } from "./services/queryReplanGate";
 import { QUERY_ROUTES, REPLAN_TOOLS, type QueryRoute } from "@shared/queryRoutes";
-import { buildQueryTelemetry } from "./services/queryTelemetry";
+import { buildQueryTelemetry, type JudgeTelemetryDecision } from "./services/queryTelemetry";
+import { runShadowAnswerJudgeIfEnabled } from "./services/queryAnswerJudge";
 import { AI_MODELS, AI_CONFIG } from "./services/aiConfig";
 import {
   getVectorStore,
@@ -50,7 +52,7 @@ async function getEmbedding(
   prompt: string,
   taskType: "RETRIEVAL_QUERY" | "RETRIEVAL_DOCUMENT" = "RETRIEVAL_QUERY",
 ): Promise<number[]> {
-  const response = (await withGeminiRetries("embedContent", () =>
+  const response = (await withLLMRetries("embedContent", () =>
     ai.models.embedContent({
       model: AI_MODELS.EMBEDDING,
       contents: [prompt],
@@ -95,6 +97,7 @@ async function handleReplanGateRecovery(params: {
     candidatesTokenCount?: number;
     totalTokenCount?: number;
   };
+  judgeDecision?: JudgeTelemetryDecision;
 }) {
   const gateInput: ReplanGateInput = {
     question: params.question,
@@ -151,6 +154,7 @@ async function handleReplanGateRecovery(params: {
         },
         fallback.telemetry as Record<string, unknown> | undefined,
         replanDecision,
+        params.judgeDecision,
       ),
     };
   }
@@ -201,6 +205,7 @@ async function handleReplanGateRecovery(params: {
       },
       bodyTelemetry,
       replanDecision,
+      params.judgeDecision,
     ),
   };
 }
@@ -501,6 +506,7 @@ export async function registerRoutes(
           candidatesTokenCount?: number;
           totalTokenCount?: number;
         },
+        judgeDecision?: JudgeTelemetryDecision,
       ) => {
         const response = await handleReplanGateRecovery({
           ai,
@@ -517,6 +523,7 @@ export async function registerRoutes(
           stepDurations,
           totalStart,
           synthesisUsage,
+          judgeDecision,
         });
         void storage
           .insertQueryLog({ question, queryMode: mode, userId, ...response.telemetry })
@@ -545,8 +552,32 @@ export async function registerRoutes(
       const { text: answer, usage: synthesisUsage } = await getAnswer(ai, prompt);
       stepDurations.synthesis = Math.round(performance.now() - synthesisStart);
 
+      const contextPreview = context.slice(0, 800);
+      const judgeInput = {
+        question,
+        localAnswer: answer,
+        relevanceScore,
+        contextPreview,
+      };
+
       if (isUncertainAnswer(answer) || isContextBoundAnswer(answer)) {
-        return runGateRecovery(REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER, answer, synthesisUsage);
+        const { decision: judgeDecision, durationMs: judgeDurationMs } =
+          await runShadowAnswerJudgeIfEnabled(ai, judgeInput, false);
+        if (judgeDurationMs > 0) {
+          stepDurations.judge = judgeDurationMs;
+        }
+        return runGateRecovery(
+          REPLAN_TRIGGERS.UNCERTAIN_LOCAL_ANSWER,
+          answer,
+          synthesisUsage,
+          judgeDecision,
+        );
+      }
+
+      const { decision: judgeDecision, durationMs: judgeDurationMs } =
+        await runShadowAnswerJudgeIfEnabled(ai, judgeInput, true);
+      if (judgeDurationMs > 0) {
+        stepDurations.judge = judgeDurationMs;
       }
 
       const successBody = {
@@ -556,26 +587,29 @@ export async function registerRoutes(
         isAdviceQuestion: questionStructure.isAdviceQuestion,
         _route: QUERY_ROUTES.LOCAL_RAG,
         _cache: { embeddingHit: embeddingCacheHit, webSearchHit: false },
-        telemetry: {
-          route: QUERY_ROUTES.LOCAL_RAG,
-          totalDurationMs: Math.round(performance.now() - totalStart),
-          stepDurations,
-          relevanceScore: parseFloat(relevanceScore.toFixed(3)),
-          provider: process.env.USE_VERTEX_AI === "true" ? "GCP Vertex AI" : "Google AI Studio",
-          modelsUsed: {
-            synthesis: AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
-            analysis: questionStructure.intentLabel ?? QUERY_ROUTES.LOCAL_RAG,
-            embedding: AI_MODELS.EMBEDDING,
+        telemetry: buildQueryTelemetry(
+          QUERY_ROUTES.LOCAL_RAG,
+          {
+            totalDurationMs: Math.round(performance.now() - totalStart),
+            stepDurations,
+            relevanceScore: parseFloat(relevanceScore.toFixed(3)),
+            embeddingCacheHit,
+            webSearchHit: false,
+            responseHit: false,
+            synthesisModel: AI_MODELS.DEFAULT_ANSWERING_FALLBACKS[0],
+            analysisLabel: questionStructure.intentLabel ?? QUERY_ROUTES.LOCAL_RAG,
+            intentLabel: questionStructure.intentLabel,
+            intentSource: questionStructure.intentSource,
+            intentConfidence: questionStructure.intentConfidence,
+            recoveryHint: questionStructure.recoveryHint,
+            promptTokens: synthesisUsage?.promptTokenCount || 0,
+            completionTokens: synthesisUsage?.candidatesTokenCount || 0,
+            totalTokens: synthesisUsage?.totalTokenCount || 0,
           },
-          cacheStatus: { embeddingHit: embeddingCacheHit, webSearchHit: false, responseHit: false },
-          promptTokens: synthesisUsage?.promptTokenCount || 0,
-          completionTokens: synthesisUsage?.candidatesTokenCount || 0,
-          totalTokens: synthesisUsage?.totalTokenCount || 0,
-          intentLabel: questionStructure.intentLabel,
-          intentSource: questionStructure.intentSource,
-          intentConfidence: questionStructure.intentConfidence,
-          recoveryHint: questionStructure.recoveryHint,
-        },
+          undefined,
+          undefined,
+          judgeDecision,
+        ),
       };
 
       queryCache.setResponse(question, successBody, mode, userId);

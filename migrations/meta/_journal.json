@@ -8,6 +8,20 @@
       "when": 1781877771654,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783376344445,
+      "tag": "0001_add_judge_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783376533993,
+      "tag": "0002_add_replan_reason_to_query_logs",
+      "breakpoints": true
     }
   ]
 }

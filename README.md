@@ -65,6 +65,7 @@ NODE_ENV=development
 # Agentic routing toggles (optional)
 QUERY_INTENT_LLM=true          # LLM intent classifier; set false for heuristics only
 REPLAN_GATE_ENABLED=true       # Single-step replan on uncertain local answers; set false to skip
+ANSWER_JUDGE_SHADOW=false      # Advisory answer judge after synthesis; logs to query_logs, no routing change
 ```
 
 ### Getting a Gemini API Key
