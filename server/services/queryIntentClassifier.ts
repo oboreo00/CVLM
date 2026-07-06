@@ -13,7 +13,7 @@ import {
   type IntentLabel,
   type RecoveryHint,
 } from "@shared/queryIntent";
-import { withGeminiRetries } from "./geminiClient.ts";
+import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS } from "./aiConfig.ts";
 import type { LLMAdapter } from "./llmAdapter.ts";
 
@@ -300,7 +300,7 @@ Q: ${question}
 {"intent":"...","isSimpleFactualLookup":bool,"isAdviceQuestion":bool,"isComplex":bool,"preferLocalRag":bool,"needsWeb":bool,"recoveryHint":"${recoveryHintValues}","estimatedSubQuestions":1-5,"confidence":0.0-1.0}`;
 
   try {
-    const response = (await withGeminiRetries("classifyQueryIntent", () =>
+    const response = (await withLLMRetries("classifyQueryIntent", () =>
       ai.models.generateContent({
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,

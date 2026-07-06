@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildQueryTelemetry, pickQueryLogFields } from "../server/services/queryTelemetry.ts";
+import { JUDGE_MODES, JUDGE_VERDICTS } from "@shared/judgeVerdict.ts";
 import { QUERY_ROUTES, REPLAN_TOOLS } from "@shared/queryRoutes";
 
 describe("queryTelemetry", () => {
@@ -50,12 +51,93 @@ describe("queryTelemetry", () => {
       route: QUERY_ROUTES.HYBRID_WEB_FALLBACK,
       intentLabel: "career_advice",
       replanTool: REPLAN_TOOLS.HYBRID_WEB,
+      replanReason: "decent_relevance_retry",
       totalDurationMs: 100,
       modelsUsed: { synthesis: "x", analysis: "y", embedding: "z" },
     });
     expect(row.route).toBe(QUERY_ROUTES.HYBRID_WEB_FALLBACK);
     expect(row.intentLabel).toBe("career_advice");
     expect(row.replanTool).toBe(REPLAN_TOOLS.HYBRID_WEB);
+    expect(row.replanReason).toBe("decent_relevance_retry");
+  });
+
+  it("pickQueryLogFields persists judge columns when present", () => {
+    const row = pickQueryLogFields({
+      question: "test?",
+      queryMode: "core",
+      totalDurationMs: 100,
+      judgeVerdict: JUDGE_VERDICTS.NEEDS_HYBRID,
+      judgeConfidence: 0.88,
+      judgeRationale: "Advice question not answered by resume summary.",
+      judgeMode: JUDGE_MODES.SHADOW,
+      judgeDisagreedWithHeuristic: true,
+    });
+    expect(row.judgeVerdict).toBe(JUDGE_VERDICTS.NEEDS_HYBRID);
+    expect(row.judgeConfidence).toBe("0.88");
+    expect(row.judgeRationale).toBe("Advice question not answered by resume summary.");
+    expect(row.judgeMode).toBe(JUDGE_MODES.SHADOW);
+    expect(row.judgeDisagreedWithHeuristic).toBe(true);
+  });
+
+  it("omits judge columns from pickQueryLogFields when judge did not run", () => {
+    const row = pickQueryLogFields({
+      question: "test?",
+      queryMode: "core",
+      totalDurationMs: 100,
+    });
+    expect(row).not.toHaveProperty("judgeVerdict");
+    expect(row).not.toHaveProperty("judgeMode");
+  });
+
+  it("buildQueryTelemetry accepts judgeDecision for future shadow/live wiring", () => {
+    const telemetry = buildQueryTelemetry(
+      QUERY_ROUTES.LOCAL_RAG,
+      {
+        totalDurationMs: 300,
+        stepDurations: { synthesis: 100, judge: 45 },
+        relevanceScore: 0.5,
+        embeddingCacheHit: false,
+      },
+      undefined,
+      undefined,
+      {
+        verdict: JUDGE_VERDICTS.SUFFICIENT,
+        confidence: 0.91,
+        rationale: "Concise but complete.",
+        mode: JUDGE_MODES.SHADOW,
+        disagreedWithHeuristic: true,
+      },
+    );
+
+    expect(telemetry.judgeVerdict).toBe(JUDGE_VERDICTS.SUFFICIENT);
+    expect(telemetry.judgeConfidence).toBe(0.91);
+    expect(telemetry.judgeRationale).toBe("Concise but complete.");
+    expect(telemetry.judgeMode).toBe(JUDGE_MODES.SHADOW);
+    expect(telemetry.judgeDisagreedWithHeuristic).toBe(true);
+    expect(telemetry.stepDurations).toMatchObject({ judge: 45 });
+  });
+
+  it("truncates long judge rationales before persistence", () => {
+    const telemetry = buildQueryTelemetry(
+      QUERY_ROUTES.LOCAL_RAG,
+      {
+        totalDurationMs: 100,
+        stepDurations: {},
+        relevanceScore: 0.5,
+        embeddingCacheHit: false,
+      },
+      undefined,
+      undefined,
+      {
+        verdict: JUDGE_VERDICTS.UNCERTAIN,
+        confidence: 0.5,
+        rationale: "x".repeat(600),
+        mode: JUDGE_MODES.SHADOW,
+      },
+    );
+
+    expect((telemetry.judgeRationale as string).length).toBeLessThanOrEqual(500);
+    expect((telemetry.judgeRationale as string).endsWith("…")).toBe(true);
   });
 
   it("preserves hybrid fallback telemetry from performUncertaintyFallback", () => {

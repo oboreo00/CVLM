@@ -1,0 +1,1 @@
+ALTER TABLE "query_logs" ADD COLUMN "replan_reason" text;

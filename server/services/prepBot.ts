@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { withGeminiRetries } from "./geminiClient.ts";
+import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS } from "./aiConfig.ts";
 import { storage } from "../storage";
 import { DOC_TYPES } from "@shared/resumeTypes";
@@ -69,7 +69,7 @@ Resume:
 ${text}`;
 
   try {
-    const response = (await withGeminiRetries("prepBot", () =>
+    const response = (await withLLMRetries("prepBot", () =>
       (ai as { models: { generateContent: (args: unknown) => Promise<unknown> } }).models.generateContent({
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,

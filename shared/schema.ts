@@ -1,4 +1,4 @@
-import { pgTable, text, serial, jsonb, vector, integer, numeric, timestamp, uuid, pgPolicy } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, jsonb, vector, integer, numeric, timestamp, uuid, pgPolicy, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { createHash } from "crypto";
@@ -58,7 +58,13 @@ export const queryLogs = pgTable("query_logs", {
   provider: text("provider"),
   route: text("route"),
   replanTool: text("replan_tool"),
+  replanReason: text("replan_reason"),
   intentLabel: text("intent_label"),
+  judgeVerdict: text("judge_verdict"),
+  judgeConfidence: numeric("judge_confidence"),
+  judgeRationale: text("judge_rationale"),
+  judgeMode: text("judge_mode"),
+  judgeDisagreedWithHeuristic: boolean("judge_disagreed_with_heuristic"),
 }, (t) => [
   pgPolicy("Users can view own query logs", {
     for: "select",
