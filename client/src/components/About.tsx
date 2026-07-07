@@ -78,7 +78,7 @@ export default function About({ open, onOpenChange }: AboutProps) {
             <li><strong>Vector Store:</strong> PostgreSQL with pgvector for semantic search</li>
             <li><strong>AI Foundation:</strong> Google Gemini API via Google AI Studio, with a unified adapter designed to seamlessly pivot to enterprise Google Cloud Vertex AI</li>
             <li><strong>Agentic Query Router:</strong> LLM intent classification (`needsWeb`, `recoveryHint`) → vector retrieval → local RAG or replan gate (hybrid web / retry retrieval)</li>
-            <li><strong>Observability:</strong> Every query logs route, intent, recoveryHint, replan decisions, step latency, model attribution, and token usage</li>
+            <li><strong>Observability:</strong> Every query logs route, intent, <code>recoveryHint</code>, replan tool/reason, step latency, model attribution, and token usage — including a per-step breakdown under <code>step_durations.tokens</code> (intent, synthesis, judge, hybrid) rolled up into total token counts</li>
             <li><strong>Web Integration:</strong> Fallback to live web search for out-of-domain queries</li>
             <li><strong>Session & Security:</strong> Anonymous Supabase authentication paired with strict database-level Postgres Row-Level Security (RLS) and automatic 24-hour TTL document deletion</li>
             <li><strong>Response Caching:</strong> Semantic cache for repeated queries</li>

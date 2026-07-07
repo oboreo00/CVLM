@@ -15,7 +15,7 @@ import {
 } from "@shared/queryIntent";
 import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS } from "./aiConfig.ts";
-import type { LLMAdapter } from "./llmAdapter.ts";
+import type { LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
 
 export type { IntentLabel, RecoveryHint } from "@shared/queryIntent";
 
@@ -35,6 +35,8 @@ export interface QuestionStructure {
   preferLocalRag?: boolean;
   needsWeb?: boolean;
   recoveryHint?: RecoveryHint;
+  /** Set when QUERY_INTENT_LLM classifies; used for step_durations.tokens.intent telemetry. */
+  intentClassifierUsage?: LLMUsageMetadata;
 }
 
 export function deriveRecoveryHint(input: {
@@ -217,6 +219,12 @@ export function applyIntentGuardrails(
     };
   }
 
+  // Advice/complex before simple-factual normalization so contradictory LLM flags keep advice.
+  if (next.isAdviceQuestion || next.isComplex) {
+    if (next.isSimpleFactualLookup || next.preferLocalRag) guardrailed = true;
+    next = { ...next, isSimpleFactualLookup: false, preferLocalRag: false };
+  }
+
   if (next.isSimpleFactualLookup) {
     if (!next.preferLocalRag || next.isAdviceQuestion) guardrailed = true;
     next = {
@@ -225,11 +233,6 @@ export function applyIntentGuardrails(
       preferLocalRag: true,
       needsWeb: false,
     };
-  }
-
-  if (next.isAdviceQuestion || next.isComplex) {
-    if (next.isSimpleFactualLookup || next.preferLocalRag) guardrailed = true;
-    next = { ...next, isSimpleFactualLookup: false, preferLocalRag: false };
   }
 
   if (next.intentLabel === INTENT_LABELS.OFF_DOMAIN) {
@@ -283,7 +286,7 @@ function mergeIntent(
 async function classifyQueryIntentWithLlm(
   ai: LLMAdapter,
   question: string,
-): Promise<Partial<QuestionStructure> | null> {
+): Promise<{ partial: Partial<QuestionStructure> | null; usage?: LLMUsageMetadata }> {
   const recoveryHintValues = Object.values(RECOVERY_HINTS).join(" | ");
   const prompt = `Classify this resume Q&A question. JSON only.
 
@@ -305,14 +308,17 @@ Q: ${question}
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,
       }),
-    )) as { text?: string; candidates?: { content?: { parts?: { text?: string }[] } }[] };
+    ));
 
     const text =
       response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "";
-    return parseQueryIntentResponse(text);
+    return {
+      partial: parseQueryIntentResponse(text),
+      usage: response.usageMetadata,
+    };
   } catch (err) {
     console.error("[QueryIntent] LLM classification failed:", err);
-    return null;
+    return { partial: null };
   }
 }
 
@@ -327,18 +333,22 @@ export async function classifyQueryIntent(
     return applyIntentGuardrails(heuristic, question);
   }
 
-  const llm = await classifyQueryIntentWithLlm(ai, question);
+  const { partial: llm, usage: intentClassifierUsage } = await classifyQueryIntentWithLlm(ai, question);
   if (!llm) {
     return applyIntentGuardrails(heuristic, question);
   }
 
   const merged = mergeIntent(heuristic, llm);
   const guarded = applyIntentGuardrails(merged, question);
-  console.log("[QueryIntent]", guarded.intentLabel, guarded.intentSource, {
-    factual: guarded.isSimpleFactualLookup,
-    advice: guarded.isAdviceQuestion,
-    complex: guarded.isComplex,
-    recoveryHint: guarded.recoveryHint,
+  const withUsage: QuestionStructure = {
+    ...guarded,
+    ...(intentClassifierUsage ? { intentClassifierUsage } : {}),
+  };
+  console.log("[QueryIntent]", withUsage.intentLabel, withUsage.intentSource, {
+    factual: withUsage.isSimpleFactualLookup,
+    advice: withUsage.isAdviceQuestion,
+    complex: withUsage.isComplex,
+    recoveryHint: withUsage.recoveryHint,
   });
-  return guarded;
+  return withUsage;
 }

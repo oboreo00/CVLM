@@ -31,6 +31,11 @@ describe("queryTelemetry", () => {
       analysis: QUERY_ROUTES.LOCAL_RAG,
       embedding: expect.any(String),
     });
+    expect(telemetry.stepDurations).toMatchObject({
+      tokens: {
+        synthesis: { prompt: 100, completion: 12, total: 112 },
+      },
+    });
     expect(telemetry.cacheStatus).toEqual({
       embeddingHit: true,
       webSearchHit: false,
@@ -140,6 +145,51 @@ describe("queryTelemetry", () => {
     expect((telemetry.judgeRationale as string).endsWith("…")).toBe(true);
   });
 
+  it("buildQueryTelemetry rolls intent, synthesis, and judge tokens into step_durations.tokens", () => {
+    const telemetry = buildQueryTelemetry(
+      QUERY_ROUTES.LOCAL_RAG,
+      {
+        totalDurationMs: 400,
+        stepDurations: { analysis: 30, synthesis: 120, judge: 40 },
+        relevanceScore: 0.6,
+        embeddingCacheHit: false,
+        promptTokens: 800,
+        completionTokens: 120,
+        totalTokens: 920,
+        intentClassifierUsage: {
+          promptTokenCount: 150,
+          candidatesTokenCount: 45,
+          totalTokenCount: 195,
+        },
+      },
+      undefined,
+      undefined,
+      {
+        verdict: JUDGE_VERDICTS.SUFFICIENT,
+        confidence: 0.9,
+        mode: JUDGE_MODES.SHADOW,
+        usage: {
+          promptTokenCount: 420,
+          candidatesTokenCount: 38,
+          totalTokenCount: 458,
+        },
+      },
+    );
+
+    const modelsUsed = telemetry.modelsUsed as { judge?: string };
+    expect(modelsUsed.judge).toBeTruthy();
+    expect(
+      (telemetry.stepDurations as { tokens?: Record<string, unknown> }).tokens,
+    ).toEqual({
+      intent: { prompt: 150, completion: 45, total: 195 },
+      synthesis: { prompt: 800, completion: 120, total: 920 },
+      judge: { prompt: 420, completion: 38, total: 458 },
+    });
+    expect(telemetry.promptTokens).toBe(150 + 800 + 420);
+    expect(telemetry.completionTokens).toBe(45 + 120 + 38);
+    expect(telemetry.totalTokens).toBe(195 + 920 + 458);
+  });
+
   it("preserves hybrid fallback telemetry from performUncertaintyFallback", () => {
     const hybridTelemetry = {
       route: QUERY_ROUTES.HYBRID_WEB_FALLBACK,
@@ -173,6 +223,9 @@ describe("queryTelemetry", () => {
       searchRewrite: 200,
       webExecution: 800,
       synthesis: 400,
+      tokens: {
+        hybrid: { prompt: 500, completion: 80, total: 580 },
+      },
     });
   });
 });

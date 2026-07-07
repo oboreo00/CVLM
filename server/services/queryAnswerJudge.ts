@@ -12,7 +12,7 @@ import {
 } from "@shared/judgeVerdict.ts";
 import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS } from "./aiConfig.ts";
-import type { LLMAdapter } from "./llmAdapter.ts";
+import type { LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
 import type { JudgeTelemetryDecision } from "./queryTelemetry.ts";
 
 export interface AnswerJudgeInput {
@@ -68,7 +68,7 @@ export function judgeDisagreesWithHeuristic(
 async function classifyAnswerWithLlm(
   ai: LLMAdapter,
   input: AnswerJudgeInput,
-): Promise<AnswerJudgeResult | null> {
+): Promise<{ result: AnswerJudgeResult | null; usage?: LLMUsageMetadata }> {
   const verdictValues = Object.values(JUDGE_VERDICTS).join(" | ");
   const contextBlock = input.contextPreview?.trim()
     ? `Context preview:\n${input.contextPreview}\n\n`
@@ -98,7 +98,10 @@ ${input.localAnswer}
 
   const text =
     response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  return parseAnswerJudgeResponse(text);
+  return {
+    result: parseAnswerJudgeResponse(text),
+    usage: response.usageMetadata,
+  };
 }
 
 /** Runs shadow judge when enabled; returns telemetry fields and elapsed ms. */
@@ -113,7 +116,7 @@ export async function runShadowAnswerJudgeIfEnabled(
 
   const start = performance.now();
   try {
-    const result = await classifyAnswerWithLlm(ai, input);
+    const { result, usage } = await classifyAnswerWithLlm(ai, input);
     const durationMs = Math.round(performance.now() - start);
     if (!result) {
       console.warn("[AnswerJudge] Shadow judge parse failed");
@@ -129,6 +132,7 @@ export async function runShadowAnswerJudgeIfEnabled(
         heuristicKeptLocal,
         result.verdict,
       ),
+      usage,
     };
 
     console.log("[AnswerJudge] shadow", {
