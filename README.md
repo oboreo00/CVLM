@@ -225,7 +225,8 @@ CVLM is built with a "Production-First" mindset regarding observability. Every q
 - **Step Latency Breakdown:** Identifies bottlenecks by measuring individual durations for Analysis, Embedding, Web Search, Synthesis, and Replan Gate.
 - **Model Attribution:** Records exactly which model handled each stage of the orchestration (e.g., Flash for analysis vs. Pro for answering).
 - **Intent & Replan:** Logs `intentLabel`, `intentSource`, `intentConfidence`, `recoveryHint`, and when triggered `replanTool`, `replanSource`, `replanReason`.
-- **Token Accounting:** Captures precise prompt and completion token counts to enable cost-per-query analysis.
+- **Shadow Judge:** When `ANSWER_JUDGE_SHADOW=true`, logs `judgeVerdict`, `judgeConfidence`, `judgeRationale`, `judgeMode`, and `judgeDisagreedWithHeuristic` (advisory only; no routing change).
+- **Token Accounting:** Top-level `prompt_tokens` / `total_tokens` sum all LLM steps; per-step detail lives in `step_durations.tokens` (`intent`, `synthesis`, `judge`, `hybrid`).
 - **Retrieval Quality:** Logs the `relevanceScore` of every vector search to help fine-tune retrieval thresholds and chunking strategies.
 - **Cache Performance:** Tracks hit/miss status for the multi-layer caching system.
 - **Query Route:** Records which path handled the request (`cache`, `local_rag`, `hybrid_web_fallback`, `web_fallback_failed`, or `suggest_breakdown`).
@@ -259,10 +260,12 @@ The application uses a unified document storage schema:
   - `query_mode` (text) — Whether the query was against 'core' or 'session' data.
   - `total_duration_ms` (integer) — Total end-to-end response time.
   - `relevance_score` (numeric) — The blended retrieval confidence score.
-  - `models_used` (jsonb) — Mapping of steps to specific AI models.
-  - `step_durations` (jsonb) — Micro-latencies for each phase of execution.
+  - `models_used` (jsonb) — Model name per step (`synthesis`, `analysis`, `embedding`, `judge`).
+  - `step_durations` (jsonb) — Per-step latency in ms; optional nested `tokens` breakdown (`intent`, `synthesis`, `judge`, `hybrid`) without extra columns.
   - `cache_status` (jsonb) — Hit/miss data for the caching layers.
-  - `prompt_tokens` / `completion_tokens` (integer) — Usage metrics for cost tracking.
+  - `prompt_tokens` / `completion_tokens` (integer) — Rolled-up usage across all LLM steps.
+  - `route` / `intent_label` / `replan_tool` / `replan_reason` — Routing and replan gate decisions.
+  - `judge_verdict` / `judge_confidence` / `judge_rationale` / `judge_mode` / `judge_disagreed_with_heuristic` — Shadow judge telemetry when enabled.
   - `created_at` (timestamp) — Temporal marker for log analysis.
 
 ## Troubleshooting

@@ -39,6 +39,74 @@ describe("queryIntentClassifier", () => {
     });
   });
 
+  describe("applyIntentGuardrails", () => {
+    it("prefers advice over simple factual when LLM sets both flags", () => {
+      const s = applyIntentGuardrails(
+        {
+          isComplex: false,
+          isAdviceQuestion: true,
+          isPersonal: true,
+          isSimpleFactualLookup: true,
+          estimatedSubQuestions: 1,
+          keywords: [],
+          intentLabel: INTENT_LABELS.CAREER_ADVICE,
+          preferLocalRag: true,
+          needsWeb: false,
+          intentSource: "llm",
+        },
+        "What are the pros and cons of changing careers?",
+      );
+      expect(s.isSimpleFactualLookup).toBe(false);
+      expect(s.isAdviceQuestion).toBe(true);
+      expect(s.preferLocalRag).toBe(false);
+      expect(s.intentSource).toBe("guardrail");
+    });
+
+    it("normalizes simple factual to prefer local RAG", () => {
+      const s = applyIntentGuardrails(
+        {
+          isComplex: false,
+          isAdviceQuestion: false,
+          isPersonal: true,
+          isSimpleFactualLookup: true,
+          estimatedSubQuestions: 1,
+          keywords: [],
+          intentLabel: INTENT_LABELS.FACTUAL_PERSONAL,
+          preferLocalRag: false,
+          needsWeb: true,
+          intentSource: "llm",
+        },
+        "What did I do at my last job?",
+      );
+      expect(s.isSimpleFactualLookup).toBe(true);
+      expect(s.preferLocalRag).toBe(true);
+      expect(s.needsWeb).toBe(false);
+      expect(s.recoveryHint).toBe(RECOVERY_HINTS.RETRY_RETRIEVAL);
+      expect(s.intentSource).toBe("guardrail");
+    });
+
+    it("forces web for off-domain intent even after factual normalization", () => {
+      const s = applyIntentGuardrails(
+        {
+          isComplex: false,
+          isAdviceQuestion: false,
+          isPersonal: true,
+          isSimpleFactualLookup: true,
+          estimatedSubQuestions: 1,
+          keywords: [],
+          intentLabel: INTENT_LABELS.OFF_DOMAIN,
+          preferLocalRag: true,
+          needsWeb: false,
+          intentSource: "llm",
+        },
+        "What is the weather today?",
+      );
+      expect(s.needsWeb).toBe(true);
+      expect(s.preferLocalRag).toBe(false);
+      expect(s.isPersonal).toBe(false);
+    });
+  });
+
   describe("parseQueryIntentResponse", () => {
     it("parses LLM JSON intent", () => {
       const parsed = parseQueryIntentResponse(

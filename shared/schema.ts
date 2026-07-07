@@ -47,8 +47,8 @@ export const queryLogs = pgTable("query_logs", {
   queryMode: text("query_mode").notNull(),
   totalDurationMs: integer("total_duration_ms").notNull(),
   relevanceScore: numeric("relevance_score"),
-  modelsUsed: jsonb("models_used"), // {synthesis: string, analysis: string, embedding: string}
-  stepDurations: jsonb("step_durations"), // {embedding: ms, analysis: ms, ...}
+  modelsUsed: jsonb("models_used"), // {synthesis, analysis, embedding, judge?}
+  stepDurations: jsonb("step_durations"), // {embedding: ms, analysis: ms, ..., tokens?: {intent, synthesis, judge, hybrid}}
   cacheStatus: jsonb("cache_status"), // {embeddingHit: bool, webSearchHit: bool, responseHit: bool}
   promptTokens: integer("prompt_tokens"),
   completionTokens: integer("completion_tokens"),
