@@ -12,7 +12,7 @@ if (process.env.GOOGLE_CREDS_JSON) {
     const parsed = JSON.parse(process.env.GOOGLE_CREDS_JSON.trim());
     fs.writeFileSync(credsPath, JSON.stringify(parsed, null, 2));
     process.env.GOOGLE_APPLICATION_CREDENTIALS = credsPath;
-    console.log("[GCP] Dynamically loaded and validated credentials from GOOGLE_CREDS_JSON");
+    console.log("[GCP] loaded and validated credentials from GOOGLE_CREDS_JSON");
 
     // Automatically set GCP_PROJECT_ID from the service account JSON if not explicitly configured in env
     if (parsed.project_id && !process.env.GCP_PROJECT_ID) {
@@ -35,8 +35,8 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { cleanupExpiredSessions } from "./services/vectorStoreService";
 
-console.log("DB URL:", process.env.DATABASE_URL);
-console.log("cwd:", process.cwd());
+//console.log("DB URL:", process.env.DATABASE_URL);
+//console.log("cwd:", process.cwd());
 
 const app = express();
 const httpServer = createServer(app);
@@ -44,6 +44,15 @@ const httpServer = createServer(app);
 declare module "http" {
   interface IncomingMessage {
     rawBody: unknown;
+  }
+}
+
+declare global {
+  namespace Express {
+    interface Request {
+      /** Supabase user id from a verified JWT. Never taken from the request body. */
+      authUserId?: string;
+    }
   }
 }
 
@@ -94,8 +103,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// Middleware to extract Supabase JWT and inject userId into req.body
+// Identity for private uploads comes only from a verified Supabase JWT.
+// A client-supplied userId in the body is never trusted, including when the token is missing or invalid.
 app.use("/api", async (req, res, next) => {
+  if (req.body && typeof req.body === "object" && !Array.isArray(req.body)) {
+    delete (req.body as Record<string, unknown>).userId;
+  }
+
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith("Bearer ")) {
     const token = authHeader.substring(7);
@@ -107,12 +121,12 @@ app.use("/api", async (req, res, next) => {
           auth: { persistSession: false }
         }
       );
-      
+
       const { data, error } = await supabase.auth.getUser(token);
       if (error) {
         console.error("Supabase getUser error:", error.message);
       } else if (data?.user) {
-        req.body.userId = data.user.id; // Inject userId so schemas can parse it
+        req.authUserId = data.user.id;
       }
     } catch (err) {
       console.error("JWT verification failed:", err);

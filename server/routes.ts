@@ -232,14 +232,12 @@ export async function registerRoutes(
   queryCache.loadFromDisk();
   setInterval(() => queryCache.saveToDisk(), 5 * 60 * 1000);
 
-  // Session-scoped routes treat req.body.userId as proof of authentication.
-  // server/index.ts runs before all /api handlers: it validates Authorization: Bearer <JWT>
-  // via Supabase auth.getUser() and, on success, sets req.body.userId to the Supabase user id.
-  // No userId means no valid token was sent (or verification failed) — not an anonymous session id.
+  // Session-scoped routes use req.authUserId, set only after Supabase auth.getUser()
+  // succeeds. Client-supplied userId is stripped in server/index.ts and omitted from schemas.
 
   app.get(api.rag.sessionStatus.path, async (req, res) => {
     try {
-      const userId = req.body.userId as string | undefined;
+      const userId = req.authUserId;
       if (!userId) {
         return res.json({ hasDocument: false, prepStatus: "none" });
       }
@@ -259,10 +257,10 @@ export async function registerRoutes(
   app.get(api.rag.prepStatus.path, async (req, res) => {
     try {
       const queryMode = req.query.queryMode === "session" ? "session" : "core";
-      const userId = req.body.userId as string | undefined;
+      const userId = req.authUserId;
 
       if (queryMode === "session") {
-        // Custom resume is per-user; without middleware-injected userId the client is not authed.
+        // Custom resume is per-user; without a verified JWT the client is not authed.
         if (!userId) return res.json({ prepStatus: "none" });
         const manifest = await storage.getManifest(userId);
         return res.json(getManifestPayload(manifest));
@@ -278,9 +276,9 @@ export async function registerRoutes(
 
   app.get(api.rag.prepStream.path, async (req, res) => {
     const queryMode = req.query.queryMode === "session" ? "session" : "core";
-    const userId = req.body.userId as string | undefined;
+    const userId = req.authUserId;
 
-    // Core prep is global (knowledge/ folder); session stream is private and requires JWT → userId.
+    // Core prep is global (knowledge/ folder); session stream is private and requires a verified JWT.
     if (queryMode === "session" && !userId) {
       return res.status(401).json({ message: "Authentication required" });
     }
@@ -341,9 +339,10 @@ export async function registerRoutes(
 
   app.post(api.rag.ingest.path, async (req, res) => {
     try {
-      const { text, userId } = api.rag.ingest.input.parse(req.body);
+      const { text } = api.rag.ingest.input.parse(req.body);
+      const userId = req.authUserId;
 
-      // Ingest always targets the caller's session manifest; userId only exists after JWT middleware.
+      // Ingest always targets the caller's session manifest; userId exists only after JWT verification.
       if (!userId) {
         return res.status(400).json({
           message: "Authentication required. Core resume is loaded from the knowledge folder at startup.",
@@ -388,7 +387,8 @@ export async function registerRoutes(
     const stepDurations: Record<string, number> = {};
 
     try {
-      const { question, userId, queryMode } = api.rag.query.input.parse(req.body);
+      const { question, queryMode } = api.rag.query.input.parse(req.body);
+      const userId = req.authUserId;
       const mode = queryMode || "core";
 
       const cachedResponse =

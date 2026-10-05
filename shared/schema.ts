@@ -94,12 +94,10 @@ export type InsertDocument = z.infer<typeof insertDocumentSchema>;
 // Request types
 export const ingestSchema = z.object({
   text: z.string().min(1),
-  userId: z.string().optional(),
 });
 
 export const querySchema = z.object({
   question: z.string().min(1),
-  userId: z.string().optional(),
   queryMode: z.enum(["core", "session"]).optional(),
 });
 
