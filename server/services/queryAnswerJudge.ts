@@ -12,6 +12,7 @@ import {
 } from "@shared/judgeVerdict.ts";
 import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS } from "./aiConfig.ts";
+import { extractGenerateText } from "./geminiClient.ts";
 import type { LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
 import type { JudgeTelemetryDecision } from "./queryTelemetry.ts";
 
@@ -96,8 +97,7 @@ ${input.localAnswer}
     }),
   );
 
-  const text =
-    response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const text = extractGenerateText(response);
   return {
     result: parseAnswerJudgeResponse(text),
     usage: response.usageMetadata,

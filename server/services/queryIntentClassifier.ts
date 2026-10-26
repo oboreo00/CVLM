@@ -15,6 +15,7 @@ import {
 } from "@shared/queryIntent";
 import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS } from "./aiConfig.ts";
+import { extractGenerateText } from "./geminiClient.ts";
 import type { LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
 
 export type { IntentLabel, RecoveryHint } from "@shared/queryIntent";
@@ -310,8 +311,7 @@ Q: ${question}
       }),
     ));
 
-    const text =
-      response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const text = extractGenerateText(response);
     return {
       partial: parseQueryIntentResponse(text),
       usage: response.usageMetadata,

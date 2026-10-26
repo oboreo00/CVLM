@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractGenerateText,
   isContextBoundAnswer,
   isUncertainAnswer,
 } from "../server/services/geminiClient.ts";
@@ -12,6 +13,32 @@ describe("geminiClient answer detection", () => {
       ),
     ).toBe(true);
     expect(isContextBoundAnswer("I don't know")).toBe(false);
+  });
+
+  it("skips thought parts and concatenates visible text", () => {
+    expect(
+      extractGenerateText({
+        candidates: [
+          {
+            content: {
+              parts: [
+                { thought: true, text: '{"scratch": true}' },
+                { text: '{"intent":"factual_personal"}' },
+              ],
+            },
+          },
+        ],
+      }),
+    ).toBe('{"intent":"factual_personal"}');
+  });
+
+  it("prefers the SDK text getter when present", () => {
+    expect(
+      extractGenerateText({
+        text: "visible answer",
+        candidates: [{ content: { parts: [{ thought: true, text: "hidden" }] } }],
+      }),
+    ).toBe("visible answer");
   });
 
   it("detects classic uncertain answers", () => {

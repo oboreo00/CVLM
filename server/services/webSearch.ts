@@ -1,5 +1,6 @@
 import { withLLMRetries } from "./llmRetries";
 import { AI_MODELS } from "./aiConfig";
+import { extractGenerateText } from "./geminiClient";
 import type { LLMAdapter } from "./llmAdapter";
 
 export interface WebSearchItem {
@@ -53,7 +54,7 @@ async function searchWebGemini(ai: LLMAdapter, query: string): Promise<WebSearch
     
     const chunks: any[] = data.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
 
-    const answerText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    const answerText = extractGenerateText(data);
 
     if (chunks.length === 0 && !answerText) return [];
 

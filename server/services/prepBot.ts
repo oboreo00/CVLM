@@ -6,6 +6,8 @@
 import { randomUUID } from "crypto";
 import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS } from "./aiConfig.ts";
+import { extractGenerateText } from "./geminiClient.ts";
+import type { GenerateContentResult } from "./llmAdapter.ts";
 import { storage } from "../storage";
 import { DOC_TYPES } from "@shared/resumeTypes";
 import { filterSearchableDocs } from "@shared/documentFilters";
@@ -74,10 +76,11 @@ ${text}`;
         model: AI_MODELS.FAST_WORKHORSE,
         contents: prompt,
       }),
-    )) as { text?: string };
+    ));
 
-    if (!response.text) return fallbackPrep(text);
-    return normalizePrepResult(parsePrepJsonFromModel(response.text), text);
+    const responseText = extractGenerateText(response as GenerateContentResult);
+    if (!responseText) return fallbackPrep(text);
+    return normalizePrepResult(parsePrepJsonFromModel(responseText), text);
   } catch (e) {
     console.error("[PrepBot] Failed, using fallback chunking:", e);
     return fallbackPrep(text);

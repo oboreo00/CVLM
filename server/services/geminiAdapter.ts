@@ -32,7 +32,7 @@ export class GeminiAdapter implements LLMAdapter {
       this.client = new GoogleGenAI({
         vertexai: true,
         project: config.projectId || process.env.GCP_PROJECT_ID,
-        location: config.location || process.env.GCP_LOCATION || "us-central1",
+        location: config.location || process.env.GCP_LOCATION || "global",
       });
 
       // Hybrid Fallback: Initialize AI Studio client for 3072-dim embeddings if API key is present
@@ -89,11 +89,7 @@ export class GeminiAdapter implements LLMAdapter {
 
   private resolveGenerateModelName(model: string): string {
     if (this.useVertex) {
-      const clean = model.replace(/^models\//, "");
-      let mapped = clean;
-      if (clean.includes("lite")) mapped = "gemini-2.5-flash-lite";
-      else if (clean.includes("flash")) mapped = "gemini-2.5-flash";
-      else if (clean.includes("pro")) mapped = "gemini-2.5-pro";
+      const mapped = "gemini-3.5-flash-lite";
       console.log(`[Adapter] Vertex AI generateContent using model: ${mapped} (original: ${model})`);
       return mapped;
     }

@@ -6,13 +6,13 @@
 export const AI_MODELS = {
   // The primary models used for final answer synthesis
   DEFAULT_ANSWERING_FALLBACKS: [
+    "gemini-3.5-flash-lite",
     "gemini-flash-lite-latest",
-    "gemini-flash-latest",
-    "gemini-3-flash-preview"
+    "gemini-flash-latest"
   ],
   
   // Faster, cheapest model for background orchestration tasks
-  FAST_WORKHORSE: "gemini-flash-lite-latest",
+  FAST_WORKHORSE: "gemini-3.5-flash-lite",
   
   // Standard embedding model
   EMBEDDING: "gemini-embedding-2"

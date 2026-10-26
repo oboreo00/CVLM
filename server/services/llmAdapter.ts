@@ -22,10 +22,16 @@ export interface GenerateContentOptions {
   };
 }
 
+export interface GenerateContentPart {
+  text?: string;
+  /** Gemini 3.x thinking models may put reasoning in a thought part before the answer. */
+  thought?: boolean;
+}
+
 export interface GenerateContentResult {
   text?: string;
   candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
+    content?: { parts?: GenerateContentPart[] };
     groundingMetadata?: {
       groundingChunks?: Array<{
         web?: { title?: string; uri?: string };

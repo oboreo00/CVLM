@@ -4,8 +4,22 @@
  */
 
 import { AI_MODELS } from "./aiConfig.ts";
-import type { LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
+import type { GenerateContentResult, LLMAdapter, LLMUsageMetadata } from "./llmAdapter.ts";
 import { withLLMRetries } from "./llmRetries.ts";
+
+/** Visible model text; skips Gemini 3 thought parts that often come first in `parts`. */
+export function extractGenerateText(response: GenerateContentResult | undefined): string {
+  if (!response) return "";
+  if (typeof response.text === "string" && response.text.trim()) {
+    return response.text;
+  }
+  const parts = response.candidates?.[0]?.content?.parts ?? [];
+  return parts
+    .filter((part) => !part.thought && typeof part.text === "string")
+    .map((part) => part.text as string)
+    .join("")
+    .trim();
+}
 
 /**
  * Standard wrapper for Gemini generation with retries and simplified return
@@ -22,8 +36,7 @@ export async function getAnswer(
     }),
   );
 
-  // Use the SDK's .text getter which automatically concatenates all text parts
-  const text = response.text || response.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const text = extractGenerateText(response);
   
   return { 
     text, 

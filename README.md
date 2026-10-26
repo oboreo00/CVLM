@@ -48,7 +48,7 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # Vertex AI Toggle & Project Information
 USE_VERTEX_AI=false
 GCP_PROJECT_ID=your-project-id
-GCP_LOCATION=your-region
+GCP_LOCATION=global
 
 # Google Cloud Service Account JSON Key (Optional, paste entire JSON string for Serverless/Railway deployment)
 GOOGLE_CREDS_JSON=

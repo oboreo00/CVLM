@@ -4,7 +4,7 @@
  */
 
 import { performance } from "perf_hooks";
-import { getAnswer, isUncertainAnswer } from "./geminiClient.ts";
+import { extractGenerateText, getAnswer, isUncertainAnswer } from "./geminiClient.ts";
 import { withLLMRetries } from "./llmRetries.ts";
 import { AI_MODELS, AI_CONFIG } from "./aiConfig.ts";
 import { QUERY_ROUTES } from "@shared/queryRoutes";
@@ -115,9 +115,10 @@ Question: ${question}`;
       }),
     )) as any;
     
-    if (!response.candidates?.[0]?.content?.parts?.[0]?.text) return { questions: [], usage: null };
-    
-    const questions = response.candidates[0].content.parts[0].text
+    const breakdownText = extractGenerateText(response);
+    if (!breakdownText) return { questions: [], usage: null };
+
+    const questions = breakdownText
       .split('\n')
       .map((q: string) => q.trim())
       .filter((q: string) => q.length > 5 && q.includes('?'))
@@ -151,7 +152,7 @@ ${text.substring(0, 1000)}`;
       }),
     )) as any; // Cast to any to access the SDK helper properties if needed
     
-    const responseText = response.text;
+    const responseText = extractGenerateText(response);
     if (!responseText) return {};
     
     // Clean up potential markdown formatting in response
@@ -198,7 +199,7 @@ Current Date: ${new Date().toLocaleDateString('en-US', { year: 'numeric', month:
       }),
     )) as any;
     
-    const rewritten = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    const rewritten = extractGenerateText(response);
     if (rewritten) {
       // Clean up the response in case the model adds quotes or newlines
       const cleaned = rewritten.replace(/["\n]/g, '').trim();
